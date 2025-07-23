@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyrqg"
+version = "0.0.1"
+description = "PyRQG - Python Random Query Generator (PostgreSQL/YugabyteDB)"
+readme = "README.md"
+authors = [
+  { name = "PyRQG Authors" }
+]
+license = { file = "LICENSE" }
+requires-python = ">=3.8"
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Topic :: Database",
+  "Topic :: Software Development :: Testing",
+]
+# Note: For minimal packaging example, dependencies are not strictly enforced here.
+# See requirements.txt for full development/runtime dependencies.
+
+[project.urls]
+Homepage = "https://github.com/your-org/pyrqg"
+
+[project.scripts]
+# Provide a convenient runner entry point after `pip install pyrqg`
+# Usage: pyrqg --help  or  pyrqg random --num-tables 3 ...
+pyrqg = "pyrqg.runner:main"
+
+[tool.setuptools]
+# Only package the pyrqg Python module; other directories (grammars/, production_scenarios/) are
+# not installed as importable packages in this minimal example. They remain available in the repo.
+# If you need them packaged, convert them to Python packages or add as package_data.
+package-dir = {"" = "."}
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pyrqg*"]

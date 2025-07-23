@@ -1,0 +1,38 @@
+# Python caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+pyrqg_venv/
+.env/
+
+# Test & coverage artifacts
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Generated outputs and logs
+output/
+test_reports/
+*.log
+*.pid
+pyrqg_report_*.json
+
+# Local databases / temp files
+*.sqlite
+*.sqlite3
