@@ -6,7 +6,6 @@ import time
 import logging
 from typing import Optional, Dict, Any, List, Tuple
 from urllib.parse import urlparse
-import traceback
 
 from .result import Result, Status
 

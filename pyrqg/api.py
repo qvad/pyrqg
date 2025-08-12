@@ -3,10 +3,8 @@ PyRQG Library API - Simple interface for query generation
 """
 
 import random
-from typing import Dict, List, Optional, Any, Union
+from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
-from pathlib import Path
-import sys
 
 # Use relative imports instead of path manipulation
 
@@ -66,17 +64,20 @@ class QueryGenerator:
         table = tables[0]
         table_meta = self.tables[table]
         
+        # Precompute metadata lists to avoid repeated work
+        all_col_names = table_meta.get_column_names()
+        numeric_cols = table_meta.get_numeric_columns()
+
         # Select columns
         if not columns:
-            columns = self.rng.sample(table_meta.get_column_names(), 
-                                    k=self.rng.randint(1, len(table_meta.columns)))
+            columns = self.rng.sample(all_col_names, k=self.rng.randint(1, len(all_col_names)))
         
         query_parts = [f"SELECT {', '.join(columns)}", f"FROM {table}"]
         features = []
         
         # Add WHERE clause
-        if where and table_meta.get_numeric_columns():
-            col = self.rng.choice(table_meta.get_numeric_columns())
+        if where and numeric_cols:
+            col = self.rng.choice(numeric_cols)
             value = self.rng.randint(1, 1000)
             query_parts.append(f"WHERE {col} > {value}")
         
@@ -115,15 +116,18 @@ class QueryGenerator:
         table = table or self.rng.choice(list(self.tables.keys()))
         table_meta = self.tables[table]
         
+        # Precompute metadata lists
+        all_col_names = table_meta.get_column_names()
+        numeric_cols = set(table_meta.get_numeric_columns())
+
         # Select columns to insert (exclude auto-generated like 'id')
-        cols = [c for c in table_meta.get_column_names() 
-                if c not in ['id', 'created_at', 'updated_at']]
+        cols = [c for c in all_col_names if c not in ['id', 'created_at', 'updated_at']]
         insert_cols = self.rng.sample(cols, k=self.rng.randint(1, len(cols)))
         
         # Generate values
         values = []
         for col in insert_cols:
-            if col in table_meta.get_numeric_columns():
+            if col in numeric_cols:
                 values.append(str(self.rng.randint(1, 1000)))
             else:
                 self._query_id += 1
@@ -138,7 +142,7 @@ class QueryGenerator:
             for _ in range(self.rng.randint(2, 5)):
                 row_values = []
                 for col in insert_cols:
-                    if col in table_meta.get_numeric_columns():
+                    if col in numeric_cols:
                         row_values.append(str(self.rng.randint(1, 1000)))
                     else:
                         self._query_id += 1
@@ -184,16 +188,18 @@ class QueryGenerator:
         table = table or self.rng.choice(list(self.tables.keys()))
         table_meta = self.tables[table]
         
+        # Precompute metadata
+        all_col_names = table_meta.get_column_names()
+        numeric_cols = set(table_meta.get_numeric_columns())
+
         # Select columns to update
-        updateable_cols = [c for c in table_meta.get_column_names() 
-                          if c not in ['id', 'created_at']]
-        update_cols = self.rng.sample(updateable_cols, 
-                                    k=self.rng.randint(1, min(3, len(updateable_cols))))
+        updateable_cols = [c for c in all_col_names if c not in ['id', 'created_at']]
+        update_cols = self.rng.sample(updateable_cols, k=self.rng.randint(1, min(3, len(updateable_cols))))
         
         # Generate SET clause
         set_parts = []
         for col in update_cols:
-            if col in table_meta.get_numeric_columns():
+            if col in numeric_cols:
                 if self.rng.choice([True, False]):
                     set_parts.append(f"{col} = {col} + {self.rng.randint(1, 100)}")
                 else:
@@ -209,8 +215,8 @@ class QueryGenerator:
         if where:
             if table_meta.primary_key:
                 query_parts.append(f"WHERE {table_meta.primary_key} = {self.rng.randint(1, 100)}")
-            elif table_meta.get_numeric_columns():
-                col = self.rng.choice(table_meta.get_numeric_columns())
+            elif numeric_cols:
+                col = self.rng.choice(list(numeric_cols))
                 query_parts.append(f"WHERE {col} > {self.rng.randint(1, 500)}")
         
         # Add RETURNING
@@ -240,8 +246,9 @@ class QueryGenerator:
         
         # Add WHERE clause (always recommended for DELETE)
         if where:
-            if table_meta.get_numeric_columns():
-                col = self.rng.choice(table_meta.get_numeric_columns())
+            numeric_cols = table_meta.get_numeric_columns()
+            if numeric_cols:
+                col = self.rng.choice(numeric_cols)
                 query_parts.append(f"WHERE {col} < {self.rng.randint(1, 100)}")
             elif table_meta.primary_key:
                 query_parts.append(f"WHERE {table_meta.primary_key} = {self.rng.randint(1, 100)}")
@@ -296,52 +303,59 @@ class QueryGenerator:
         return queries
 
 class RQG:
-    """Main PyRQG API - Random Query Generator"""
+    """Main PyRQG API - Random Query Generator
+
+    Improvements focused on UX and extensibility:
+    - Built-in and optional plugin-based grammar loading
+    - Simple wrapper methods for common generation patterns
+    - Clear error messages listing available grammars
+    """
     
     def __init__(self):
         self.grammars = {}
         self.tables = {}
         self.ddl_generator = DDLGenerator()
         self._load_builtin_grammars()
+        self._load_plugin_grammars()
     
     def _load_builtin_grammars(self):
-        """Load built-in grammars"""
+        """Load built-in grammars packaged with PyRQG."""
         # DML grammars
         try:
             from grammars.dml_unique import g as dml_unique
             self.grammars['dml_unique'] = dml_unique
-        except:
+        except Exception:
             pass
         
         try:
             from grammars.dml_yugabyte import g as dml_yugabyte
             self.grammars['dml_yugabyte'] = dml_yugabyte
-        except:
+        except Exception:
             pass
         
         try:
             from grammars.dml_fixed import g as dml_fixed
             self.grammars['dml_fixed'] = dml_fixed
-        except:
+        except Exception:
             pass
         
         # YugabyteDB grammars
         try:
             from grammars.yugabyte.transactions_postgres import g as txn_grammar
             self.grammars['yugabyte_transactions'] = txn_grammar
-        except:
+        except Exception:
             pass
         
         try:
             from grammars.yugabyte.optimizer_subquery_portable import g as subquery_grammar
             self.grammars['yugabyte_subquery'] = subquery_grammar
-        except:
+        except Exception:
             pass
         
         try:
             from grammars.yugabyte.outer_join_portable import g as outer_join_grammar
             self.grammars['yugabyte_outer_join'] = outer_join_grammar
-        except:
+        except Exception:
             pass
         
         # Workload-specific grammars
@@ -353,14 +367,20 @@ class RQG:
             ('workload_select', 'grammars.workload.select_focused'),
             ('ddl_focused', 'grammars.ddl_focused'),
             ('functions_ddl', 'grammars.functions_ddl'),
-            ('dml_with_functions', 'grammars.dml_with_functions')
+            ('dml_with_functions', 'grammars.dml_with_functions'),
+            # New comprehensive test grammars
+            ('merge_statement', 'grammars.merge_statement'),
+            ('security_testing', 'grammars.security_testing'),
+            ('data_integrity_testing', 'grammars.data_integrity_testing'),
+            ('concurrent_isolation_testing', 'grammars.concurrent_isolation_testing'),
+            ('performance_edge_cases', 'grammars.performance_edge_cases')
         ]
         
         for name, module_path in workload_grammars:
             try:
                 module = __import__(module_path, fromlist=['g'])
                 self.grammars[name] = module.g
-            except:
+            except Exception:
                 pass
         
         # Alias for backward compatibility
@@ -368,6 +388,36 @@ class RQG:
             self.grammars['dml'] = self.grammars['dml_unique']
         if 'yugabyte_transactions' in self.grammars:
             self.grammars['transactions'] = self.grammars['yugabyte_transactions']
+
+    def _load_plugin_grammars(self):
+        """Load user-provided grammars from environment variable PYRQG_GRAMMARS.
+        
+        Format: PYRQG_GRAMMARS="module.path1,module.path2,..."
+        Each module must expose a top-level variable `g` (Grammar instance).
+        Names are inferred from the module basename unless duplicated, where
+        a suffix is added.
+        """
+        import os
+        value = os.environ.get("PYRQG_GRAMMARS")
+        if not value:
+            return
+        for module_path in [p.strip() for p in value.split(',') if p.strip()]:
+            try:
+                module = __import__(module_path, fromlist=['g'])
+                if hasattr(module, 'g'):
+                    base_name = module_path.split('.')[-1]
+                    name = base_name
+                    i = 2
+                    while name in self.grammars:
+                        name = f"{base_name}_{i}"
+                        i += 1
+                    self.grammars[name] = getattr(module, 'g')
+                else:
+                    # silently ignore modules without `g` to avoid breaking env-based runs
+                    pass
+            except Exception:
+                # ignore plugin import errors to keep base functionality robust
+                pass
     
     def add_table(self, table: TableMetadata):
         """Add a table definition"""
@@ -504,6 +554,15 @@ class RQG:
             'workload_upsert': 'UPSERT/INSERT ON CONFLICT patterns',
             'workload_select': 'SELECT-focused queries with joins, subqueries',
             'ddl_focused': 'DDL-focused with complex constraints, indexes, views',
+            'functions_ddl': 'Functions and procedures DDL operations',
+            'dml_with_functions': 'DML queries using SQL functions',
+            
+            # Comprehensive test grammars
+            'merge_statement': 'PostgreSQL 15+ MERGE statement testing',
+            'security_testing': 'Security features: GRANT/REVOKE, roles, RLS',
+            'data_integrity_testing': 'Constraint violations and data integrity edge cases',
+            'concurrent_isolation_testing': 'Transaction isolation and concurrency testing',
+            'performance_edge_cases': 'Query planner and performance boundary testing',
             
             # Aliases
             'dml': 'Alias for dml_unique',
@@ -530,10 +589,16 @@ class RQG:
     
     def generate_from_grammar(self, grammar_name: str, rule: str = "query", 
                             count: int = 1, seed: Optional[int] = None) -> List[str]:
-        """Generate queries from a grammar"""
+        """Generate queries from a grammar.
+        
+        Raises a clear error listing available grammars when the requested
+        grammar isn't found.
+        """
         if grammar_name not in self.grammars:
             available = ', '.join(sorted(self.grammars.keys()))
-            raise ValueError(f"Grammar '{grammar_name}' not found. Available: {available}")
+            raise ValueError(
+                f"Grammar '{grammar_name}' not found. Available grammars: {available}"
+            )
         
         grammar = self.grammars[grammar_name]
         queries = []
@@ -544,6 +609,19 @@ class RQG:
             queries.append(query)
         
         return queries
+
+    def generate(self, grammar: Optional[str] = None, rule: str = "query", count: int = 1,
+                 seed: Optional[int] = None) -> List[str]:
+        """Convenience wrapper to generate queries.
+        
+        - grammar: If None, uses 'dml_unique' when available, otherwise the first loaded.
+        - rule: Grammar rule to generate from (default: 'query').
+        - count: Number of queries.
+        - seed: Optional base seed; each query increments seed deterministically.
+        """
+        if grammar is None:
+            grammar = 'dml_unique' if 'dml_unique' in self.grammars else next(iter(self.grammars.keys()))
+        return self.generate_from_grammar(grammar, rule=rule, count=count, seed=seed)
 
 # Convenience function
 def create_rqg() -> RQG:

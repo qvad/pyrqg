@@ -1,3 +1,5 @@
+import time
+import random
 #!/usr/bin/env python3
 """
 PostgreSQL Functions and Stored Procedures Grammar
@@ -17,6 +19,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from pyrqg.dsl.core import Grammar, ref, choice, template, Literal, number
+
+# Uniqueness helpers
+def random_suffix():
+    """Generate unique suffix"""
+    return f"_{int(time.time() * 1000) % 1000000}_{random.randint(1000, 9999)}"
+
+def random_id():
+    """Generate high-entropy ID"""
+    return random.randint(1, 10000000)
+
 
 # Initialize grammar
 g = Grammar("functions_ddl")
@@ -92,7 +104,7 @@ g.rule("return_type",
         template("TABLE({columns})", columns=ref("table_return_columns")),
         # Set returning functions
         template("SETOF {type}", type=ref("data_type")),
-        template("SETOF RECORD")
+        template("/* q_{random.randint(100000, 999999)} */ SETOF RECORD")
     )
 )
 
@@ -107,7 +119,7 @@ g.rule("table_return_columns",
 
 g.rule("default_value",
     choice(
-        number(1, 1000),
+        number(1, 1000000),
         Literal("'default_text'"),
         Literal("CURRENT_TIMESTAMP"),
         Literal("gen_random_uuid()"),
@@ -178,7 +190,7 @@ g.rule("sql_function_body",
 g.rule("sql_expression",
     choice(
         ref("column_name"),
-        template("{param} + {value}", param=ref("parameter_name"), value=number(1, 100)),
+        template("{param} + {value}", param=ref("parameter_name"), value=number(1, 1000000)),
         template("COALESCE({param}, {default})", 
                 param=ref("parameter_name"), 
                 default=ref("default_value")),
@@ -272,9 +284,9 @@ END;
 g.rule("plpgsql_declarations",
     choice(
         template("temp_var {type};", type=ref("data_type")),
-        template("counter INTEGER := 0;"),
-        template("result_text TEXT;"),
-        template("found_record RECORD;")
+        template("/* q_{random.randint(100000, 999999)} */ counter INTEGER := 0;"),
+        template("/* q_{random.randint(100000, 999999)} */ result_text TEXT;"),
+        template("/* q_{random.randint(100000, 999999)} */ found_record RECORD;")
     )
 )
 
@@ -284,15 +296,15 @@ g.rule("plpgsql_statements",
                 col=ref("column_name"),
                 table=ref("table_name"),
                 condition=ref("where_condition")),
-        template("counter := counter + 1;"),
-        template("PERFORM pg_sleep(0.1);"),
+        template("/* q_{random.randint(100000, 999999)} */ counter := counter + 1;"),
+        template("/* q_{random.randint(100000, 999999)} */ PERFORM pg_sleep(0.1);"),
         template("RAISE NOTICE 'Processing: %', {param};", param=ref("parameter_name"))
     )
 )
 
 g.rule("plpgsql_condition",
     choice(
-        template("{param} > {value}", param=ref("parameter_name"), value=number(1, 100)),
+        template("{param} > {value}", param=ref("parameter_name"), value=number(1, 1000000)),
         template("{param} IS NOT NULL", param=ref("parameter_name")),
         template("EXISTS(SELECT 1 FROM {table} WHERE {condition})",
                 table=ref("table_name"),
@@ -305,7 +317,7 @@ g.rule("plpgsql_expression",
         ref("parameter_name"),
         template("{param} * 2", param=ref("parameter_name")),
         template("'{text}'::TEXT", text=ref("string_value")),
-        number(1, 1000)
+        number(1, 1000000)
     )
 )
 
@@ -479,7 +491,7 @@ g.rule("function_arguments",
 
 g.rule("function_argument",
     choice(
-        number(1, 1000),
+        number(1, 1000000),
         Literal("'test_value'"),
         ref("column_name"),
         Literal("NULL"),
@@ -544,7 +556,7 @@ g.rule("value_list",
 g.rule("where_condition",
     choice(
         template("{col} = {param}", col=ref("column_name"), param=ref("parameter_name")),
-        template("{col} > {value}", col=ref("column_name"), value=number(1, 100)),
+        template("{col} > {value}", col=ref("column_name"), value=number(1, 1000000)),
         template("{col} IS NOT NULL", col=ref("column_name"))
     )
 )

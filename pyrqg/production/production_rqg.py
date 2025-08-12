@@ -166,17 +166,19 @@ class ProductionRQG:
         data_gen = DynamicDataGenerator(self.config.data, rng)
         
         # Create base RQG with dynamic tables
+        from pyrqg.api import TableMetadata
         base_rqg = BaseRQG()
         
         # Add dynamic tables
         for i in range(10):  # Start with 10 tables
             schema = data_gen.generate_schema("medium")
-            # Convert to BaseRQG format
-            # This is simplified - would need proper conversion
-            base_rqg.add_table({
-                "name": schema.name,
-                "columns": [col.name for col in schema.columns]
-            })
+            # Convert to TableMetadata format
+            columns = [{"name": col.name, "type": col.data_type} for col in schema.columns]
+            table = TableMetadata(
+                name=schema.name,
+                columns=columns
+            )
+            base_rqg.add_table(table)
         
         # Add grammars
         for name, grammar in self.grammars.items():

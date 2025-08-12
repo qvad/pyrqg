@@ -148,10 +148,10 @@ g.rule("merge_updates",
 
 g.rule("update_condition",
     choice(
-        Lambda(lambda ctx: f"{ctx.grammar.rules['table_name'].generate(ctx)}.updated_at < EXCLUDED.updated_at"),
-        Lambda(lambda ctx: f"{ctx.grammar.rules['table_name'].generate(ctx)}.version < EXCLUDED.version"),
-        Lambda(lambda ctx: f"{ctx.grammar.rules['table_name'].generate(ctx)}.status != 'locked'"),
-        Lambda(lambda ctx: f"EXCLUDED.priority > {ctx.grammar.rules['table_name'].generate(ctx)}.priority")
+        Lambda(lambda ctx: f"{g.rules['table_name'].generate(ctx)}.updated_at < EXCLUDED.updated_at"),
+        Lambda(lambda ctx: f"{g.rules['table_name'].generate(ctx)}.version < EXCLUDED.version"),
+        Lambda(lambda ctx: f"{g.rules['table_name'].generate(ctx)}.status != 'locked'"),
+        Lambda(lambda ctx: f"EXCLUDED.priority > {g.rules['table_name'].generate(ctx)}.priority")
     )
 )
 
@@ -214,6 +214,9 @@ g.rule("update_value",
         "DEFAULT"
     )
 )
+
+# Export grammar
+grammar = g
 
 if __name__ == "__main__":
     print("UPSERT-focused Grammar Test")

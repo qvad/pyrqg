@@ -4,11 +4,9 @@ Reporters - Output test results in various formats
 
 import json
 import logging
-import sys
 from typing import List, Dict, Any, Optional, Type, TextIO
 from abc import ABC, abstractmethod
 from datetime import datetime
-from pathlib import Path
 
 from .result import Result, Status
 

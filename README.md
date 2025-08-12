@@ -1,15 +1,19 @@
-# Python PyRQG
+# PyRQG - Python Random Query Generator
 
-Modern Python implementation of the Random Query Generator with **billion-scale production capabilities**.
+A high-performance SQL query generator for database testing, supporting PostgreSQL and YugabyteDB with billion-scale capabilities.
 
-## Directory Structure
-- `pyrqg/` - Core Python package
-- `grammars/` - Python grammar definitions
-- `tests/` - Test suite
-- `scripts/` - Utility scripts
-- `docs/` - Documentation
+## Key Features
+
+- **Billion-Scale Generation**: Generate 10+ billion unique queries
+- **High Performance**: 100,000+ queries per second with multithreading
+- **Schema-Aware Generation**: 99.99%+ PostgreSQL compatibility
+- **256-bit Entropy**: Cryptographically secure randomization
+- **Python DSL**: Intuitive grammar definition framework
+- **Production Ready**: Monitoring, checkpoints, graceful shutdown
+- **PostgreSQL & YugabyteDB**: Full support for both databases
 
 ## Installation
+
 ```bash
 # Create virtual environment
 python3 -m venv venv
@@ -24,7 +28,34 @@ pip install -e .
 
 ## Quick Start
 
-### Using the API:
+### Using the Runner (recommended)
+
+```bash
+# List available grammars (discoverability)
+python -m pyrqg.runner list
+
+# Generate random Yugabyte-focused DDL schema (5 tables)
+python -m pyrqg.runner ddl --num-tables 5 --seed 42 --output schema.sql
+
+# Generate a single random table with random PK, indexes and properties
+python -m pyrqg.runner ddl --table demo --num-columns 8 --num-constraints 4 --seed 7
+
+# Generate 100 queries from a built-in grammar
+python -m pyrqg.runner grammar --grammar dml_yugabyte --count 100 --seed 123 --output queries.sql
+
+# Delegate to the production runner (predefined configs retained)
+python -m pyrqg.runner production --config yugabyte --count 100000
+
+# Run a production scenario workload (grammar file)
+python -m pyrqg.runner scenario --file production_scenarios\workloads\01_ecommerce_workload.py --count 1000
+
+# Execute end-to-end against local PostgreSQL (creates random tables, applies ALTERs, runs queries)
+python -m pyrqg.runner exec --dsn "postgresql://postgres:password@localhost:5432/postgres" --num-tables 20 --count 100000 --use-filter
+```
+
+
+### Using the Python API
+
 ```python
 from pyrqg.api import create_rqg
 
@@ -35,122 +66,179 @@ queries = rqg.generate_from_grammar('dml_unique', count=10)
 for query in queries:
     print(query)
 
-# Generate DDL with complex constraints
-ddl_statements = rqg.generate_complex_ddl(num_tables=5)
-for ddl in ddl_statements:
-    print(ddl)
+# Generate schema-aware queries for PostgreSQL
+rqg_pg = create_rqg()
+queries = rqg_pg.generate_from_grammar('dml_unique', count=10)
 ```
 
-### Using the CLI:
-```bash
-# Run with a grammar file for 60 seconds
-python -m pyrqg.cli --grammar grammars/dml_unique.py --duration 60
+### Schema-Aware Generation (NEW)
 
-# Run 1000 queries
-python -m pyrqg.cli --grammar grammars/dml_unique.py --queries 1000
+```python
+from pyrqg.schema_aware_generator import get_schema_aware_generator
 
-# Use the simple launcher script
-python scripts/rqg.py generate --count 10
+# Connect to your database
+generator = get_schema_aware_generator()
 
-# Generate workload
-python scripts/workload_generator.py --duration 60 --qps 10
+# Generate queries that match your actual schema
+query = generator.generate_insert("users")    # Uses real columns
+query = generator.generate_update("products") # Type-aware values
+query = generator.generate_select("orders")   # Valid joins
 ```
-
-## Key Features
-- **Billion-Scale Generation** - Generate 10+ billion unique queries
-- **High Performance** - 100,000+ queries per second with multithreading
-- **256-bit Entropy** - Cryptographically secure randomization
-- **Python DSL** for grammar definition
-- **Enhanced DDL** with composite keys, check constraints, foreign keys
-- **Query Uniqueness** - Probabilistic tracking with <0.001% false positives
-- **Dynamic Data** - Realistic names, emails, addresses, correlations
-- **YugabyteDB Support** - Specialized grammars and validators
-- **Workload Generation** - Configurable query distributions
-- **Production Ready** - Monitoring, checkpoints, graceful shutdown
 
 ## Available Grammars
+
+### Core Grammars
 - `dml_unique` - DML with maximum uniqueness
-- `dml_yugabyte` - YugabyteDB DML with ON CONFLICT, RETURNING
 - `ddl_focused` - Complex DDL generation
 - `functions_ddl` - PostgreSQL functions and stored procedures
-- `dml_with_functions` - DML with function calls
 - `advanced_query_patterns` - Complex query patterns
 - `postgresql15_types` - PostgreSQL 15 data types
 - `json_sql_pg15` - PostgreSQL 15 JSON/SQL features
-- `simple_transaction` - Transaction patterns
-- `yugabyte_transactions` - YugabyteDB transaction patterns
-- **Workload grammars:**
-  - `insert_workload` - INSERT-focused queries
-  - `update_workload` - UPDATE-focused queries
-  - `delete_workload` - DELETE-focused queries
-  - `select_workload` - SELECT with joins
-  - `upsert_workload` - INSERT ON CONFLICT patterns
-- **YugabyteDB grammars:**
-  - `transactions_postgres` - PostgreSQL-compatible transactions
-  - `optimizer_subquery_portable` - Subquery optimizer tests
-  - `outer_join_portable` - Outer join patterns
+
+### Workload Grammars
+- `workload/insert_focused` - INSERT-heavy workload
+- `workload/update_focused` - UPDATE-heavy workload
+- `workload/delete_focused` - DELETE-heavy workload
+- `workload/select_focused` - SELECT with complex joins
+- `workload/upsert_focused` - INSERT ON CONFLICT patterns
+
+### YugabyteDB Grammars
+- `yugabyte/transactions_postgres` - Distributed transactions
+- `yugabyte/optimizer_subquery_portable` - Optimizer testing
+- `yugabyte/outer_join_portable` - Complex join patterns
 
 ## Production Usage
 
 ### Billion-Scale Generation
+
 ```bash
-# Use predefined configurations
-python run_production.py --config billion      # 1 billion queries
-python run_production.py --config test         # 10k test queries
-python run_production.py --config performance  # Benchmark mode
-python run_production.py --config yugabyte    # YugabyteDB testing
+# Use predefined configuration (e.g., yugabyte, test, performance, minimal, billion)
+python -m pyrqg.runner production --config yugabyte
 
 # Custom configuration
-python run_production.py --custom --queries 100000 --grammars dml_unique,functions_ddl
+python -m pyrqg.runner production --custom --queries 1000000000 --grammars dml_unique,functions_ddl --threads 16
 
-# Override settings
-python run_production.py --config test --count 50000 --threads 8 --no-uniqueness
-
-# Save to file
-python run_production.py --config test --output queries.sql
+# Override target count and threads on predefined config
+python -m pyrqg.runner production --config yugabyte --count 1000000 --threads 8
 
 # Resume from checkpoint
-python run_production.py --config billion --checkpoint output/billion_scale/checkpoint.json
+python -m pyrqg.runner production --config yugabyte --checkpoint checkpoint.json
+
+# Production scenario (DDL + mixed workload for scenario + general workload)
+python -m pyrqg.runner production --production-scenario bank --count 1000 --seed 42 --output prod_bank.sql
 ```
 
-### Configuration
-Production PyRQG uses Python-based configuration for type safety and IDE support:
-
-```python
-from pyrqg.production.configs import billion_scale_config, custom_config
-
-# Use predefined configuration
-config = billion_scale_config()  # 1 billion queries, all optimizations
-
-# Create custom configuration
-config = custom_config(
-    name="my_test",
-    queries=100_000,
-    grammars=["dml_unique", "functions_ddl"],
-    threads=8,
-    uniqueness=True
-)
-
-# Modify configuration
-config.threading.num_threads = 16
-config.uniqueness.false_positive_rate = 0.001
-```
-
-Available configurations:
-- `billion` - 1 billion queries with maximum performance
-- `test` - 10k queries with deterministic settings
-- `performance` - Benchmark mode (no uniqueness checking)
-- `minimal` - Minimal configuration
-- `yugabyte` - YugabyteDB-specific testing
-
-## Performance
+### Performance Benchmarks
 
 On a modern 16-core machine:
 - **Query Generation**: 100,000+ queries/second
+- **Schema-Aware**: 7,200 queries/second with 99.99% success
+- **PostgreSQL Filtered**: 3,000-5,000 queries/second
 - **Memory Usage**: <10GB for billion-query runs
 - **Uniqueness**: >99.999% unique queries
-- **Entropy**: 2^256 possible states
+
+## Advanced Features
+
+### PostgreSQL Compatibility
+
+PyRQG includes advanced PostgreSQL compatibility features:
+
+```python
+# Enable PostgreSQL filtering
+from pyrqg.filters.postgres_filter import PostgreSQLFilter
+
+pg_filter = PostgreSQLFilter()
+valid_query = pg_filter.filter_query(query)  # Returns validated query or None
+
+# Analyze query patterns
+from pyrqg.filters.query_analyzer import QueryAnalyzer
+
+analyzer = QueryAnalyzer()
+stats = analyzer.analyze_queries(queries)
+print(stats.error_distribution)
+```
+
+### Custom Grammar Definition
+
+```python
+from pyrqg.dsl.core import Grammar, choice, template, repeat
+
+grammar = Grammar(
+    main=choice(
+        template("SELECT $columns FROM $table WHERE $condition"),
+        template("INSERT INTO $table ($columns) VALUES ($values)")
+    ),
+    columns=repeat("column", min=1, max=5, separator=", "),
+    column=choice("id", "name", "email", "created_at"),
+    table=choice("users", "products", "orders"),
+    condition=template("$column = $value"),
+    value=choice("'test'", "123", "true", "NULL"),
+    values=repeat("value", min=1, max=5, separator=", ")
+)
+```
+
+### Monitoring and Analysis
+
+Use the Runner to generate queries (to files if needed), then feed them to your preferred execution/monitoring tooling or test harness.
+
+## Architecture
+
+PyRQG uses a modular architecture optimized for performance:
+
+1. **DSL Framework**: Grammar definition using Python primitives
+2. **Execution Engine**: Recursive grammar processing with caching
+3. **Production System**: Multi-threaded generation with batching
+4. **Entropy Manager**: Thread-safe 256-bit randomization
+5. **Uniqueness Tracker**: Bloom filter with <0.001% false positives
+6. **PostgreSQL Filter**: Query validation and fixing
+7. **Schema Awareness**: Real-time database introspection
+
+## Testing
+
+```bash
+# Run all tests
+./run_tests.sh
+
+# Run specific test suites
+python -m pytest tests/test_dsl_core.py -v
+python -m pytest tests/test_production.py -v
+python -m pytest tests/test_grammars.py -v
+
+# Run with coverage
+python -m pytest --cov=pyrqg --cov-report=html
+```
 
 ## Documentation
-- [Quick Start Guide](docs/QUICK_START.md) - Simple examples and basic usage
-- [Production Requirements](docs/PRODUCTION_REQUIREMENTS.md) - Billion-scale design
+
+- [Architecture Overview](docs/ARCHITECTURE.md)
+- [Grammar Development Guide](docs/GRAMMAR_GUIDE.md)
+- [Production Configuration](docs/PRODUCTION_CONFIG.md)
+- [PostgreSQL Compatibility](docs/POSTGRES_COMPAT.md)
+
+## Cleanup
+
+To clean up non-essential artifacts (logs, generated reports, temp outputs, etc.) based on the curated list in CLEANUP_DELETE_LIST.txt:
+
+```bash
+# Dry-run (recommended): shows what would be deleted
+python scripts/cleanup_from_list.py --dry-run
+
+# Execute cleanup
+python scripts/cleanup_from_list.py --execute
+
+# Verbose output
+python scripts/cleanup_from_list.py --execute --verbose
+```
+
+Notes:
+- The script reads only the "Deletion candidates" section and ignores [KEEP] entries.
+- docs/ is always protected and will not be deleted by the script.
+- Review and adjust CLEANUP_DELETE_LIST.txt before running with --execute.
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Contributing
+
+Contributions are welcome! Please read our [Contributing Guide](CONTRIBUTING.md) for details on our code of conduct and the process for submitting pull requests.

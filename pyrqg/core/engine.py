@@ -6,9 +6,7 @@ import time
 import logging
 from typing import Dict, List, Optional, Any, Callable
 from dataclasses import dataclass, field
-from pathlib import Path
 import signal
-import sys
 
 from .executor import Executor, create_executor
 from .result import Result, Status

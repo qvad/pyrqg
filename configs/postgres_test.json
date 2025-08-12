@@ -1,0 +1,36 @@
+{
+  "database": {
+    "type": "postgresql",
+    "connection": "dbname=postgres",
+    "dbname": "postgres"
+  },
+  "ddl": {
+    "enabled": true,
+    "search_path": "pyrqg, public",
+    "commands": [
+      "DROP SCHEMA IF EXISTS pyrqg CASCADE",
+      "CREATE SCHEMA pyrqg",
+      "SET search_path TO pyrqg, public"
+    ],
+    "files": ["pyrqg/schemas/postgres_schema.sql"]
+  },
+  "dml": {
+    "enabled": true,
+    "grammars": [
+      "workload_insert",
+      "workload_update",
+      "workload_select",
+      "workload_delete"
+    ],
+    "batch_size": 100
+  },
+  "select": {
+    "enabled": false,
+    "grammars": ["workload_select"],
+    "batch_size": 50
+  },
+  "time_limit_hours": 6,
+  "query_limit": 0,
+  "verbose": false,
+  "save_report": true
+}

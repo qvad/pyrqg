@@ -166,7 +166,7 @@ class WorkerThread(threading.Thread):
         queries = []
         
         for i in range(batch.count):
-            query = generator.generate(batch.grammar_name, **batch.params)
+            query = generator.generate_from_grammar(batch.grammar_name, count=1, **batch.params)[0]
             queries.append(query)
             
         batch.queries = queries

@@ -1,6 +1,6 @@
 # PyRQG Agent Documentation
 
-This document provides comprehensive information about PyRQG (Python Random Query Generator) for future Claude AI sessions. It includes all essential details about the project structure, features, requirements, and usage.
+This document provides comprehensive information about PyRQG (Python Random Query Generator) for contributors and automation agents. It includes all essential details about the project structure, features, requirements, and usage.
 
 ## Project Overview
 
