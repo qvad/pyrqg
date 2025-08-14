@@ -60,18 +60,127 @@ def run_grammar(args) -> int:
 
 
 def run_production(args, forwarded: Optional[List[str]] = None) -> int:
-    """Production entry. If --production-scenario is provided, run scenario flow; otherwise delegate to production CLI."""
+    """Production entry. If --production-scenario is provided, run scenario flow; otherwise delegate to production CLI.
+
+    Fallback behavior: if the external production module is unavailable but the caller
+    requested --custom, handle a lightweight generation pipeline here supporting
+    --queries/--count, --grammars and --threads (ignored).
+    """
     if getattr(args, 'production_scenario', None):
         return run_production_scenario(args)
-    if not HAS_PRODUCTION:
-        raise RuntimeError("Production runner is not available in this build.")
-    # Delegate to existing production CLI, forwarding remaining CLI args
-    orig_argv = sys.argv[:]  # copy
+
+    # If production package is available, delegate
+    if HAS_PRODUCTION:
+        orig_argv = sys.argv[:]  # copy
+        try:
+            sys.argv = [orig_argv[0]] + (forwarded or [])
+            return production_main()
+        finally:
+            sys.argv = orig_argv
+
+    # Fallback: lightweight "custom" production mode implemented locally
+    fw = forwarded or []
+    if "--custom" in fw:
+        return _run_production_custom_fallback(args, fw)
+
+    # Otherwise, inform the user with actionable guidance
+    raise RuntimeError(
+        "Production runner is not available in this build. "
+        "Either install the production extras, use `--custom` (supported in this build), "
+        "or use other modes: ddl/grammar/scenario/exec."
+    )
+
+
+def _parse_production_custom_args(fw: List[str]) -> Tuple[int, List[str], Optional[int]]:
+    """Parse a minimal subset of production --custom args from forwarded list.
+    Supports: --queries N (or --count N), --grammars a,b,c, --threads N.
+    Returns (count, grammars, threads).
+    """
+    count: Optional[int] = None
+    grammars: Optional[List[str]] = None
+    threads: Optional[int] = None
+
+    i = 0
+    while i < len(fw):
+        tok = fw[i]
+        if tok == "--queries" and i + 1 < len(fw):
+            try:
+                count = int(fw[i + 1])
+            except Exception:
+                pass
+            i += 2
+            continue
+        if tok == "--count" and i + 1 < len(fw):
+            try:
+                count = int(fw[i + 1])
+            except Exception:
+                pass
+            i += 2
+            continue
+        if tok == "--grammars" and i + 1 < len(fw):
+            grammars = [x.strip() for x in fw[i + 1].split(',') if x.strip()]
+            i += 2
+            continue
+        if tok == "--threads" and i + 1 < len(fw):
+            try:
+                threads = int(fw[i + 1])
+            except Exception:
+                pass
+            i += 2
+            continue
+        # skip unknown tokens and their value if it looks like an option value
+        i += 1
+
+    if grammars is None:
+        grammars = ["dml_unique"]
+    if count is None:
+        count = 1000
+
+    return count, grammars, threads
+
+
+def _run_production_custom_fallback(args, fw: List[str]) -> int:
+    """Lightweight custom production pipeline: generates queries from listed grammars.
+    Streams output to stdout or a file, without external production package.
+    """
+    total, grammars, threads = _parse_production_custom_args(fw)
+
+    rqg = RQG()
+    remaining = int(total)
+    seed = args.seed
+
+    # Prepare output
+    if args.output:
+        out_path = Path(args.output)
+        out = out_path.open('w', encoding='utf-8')
+        close_out = True
+        print(f"[PyRQG] Production(custom) generating {remaining} queries from {','.join(grammars)} -> {args.output}")
+    else:
+        out = sys.stdout
+        close_out = False
+
     try:
-        sys.argv = [orig_argv[0]] + (forwarded or [])
-        return production_main()
+        gi = 0
+        batch_base = 0
+        CHUNK = 1000
+        while remaining > 0:
+            gname = grammars[gi % len(grammars)]
+            to_gen = min(CHUNK, remaining)
+            # Vary seed slightly per batch to improve diversity if provided
+            cur_seed = (seed + batch_base) if (seed is not None) else None
+            queries = rqg.generate_from_grammar(gname, count=to_gen, seed=cur_seed)
+            for q in queries:
+                out.write(q.rstrip(';') + ';\n')
+            remaining -= to_gen
+            gi += 1
+            batch_base += 1
+        if out is not sys.stdout:
+            print(f"[PyRQG] Done. Wrote {total} queries.")
     finally:
-        sys.argv = orig_argv
+        if close_out:
+            out.close()
+
+    return total
 
 
 def _resolve_scenario_files(keyword: str) -> Tuple[Optional[Path], Optional[Path]]:
@@ -218,14 +327,24 @@ def run_exec(args) -> int:
     syntax_errors = 0
     executed = 0
 
+    error_samples = []
+    max_samples = getattr(args, 'error_samples', 10)
+
     for _ in range(total):
         q = qgen.generate_batch(1)[0].sql
         res = executor.execute(q)
         executed += 1
         if res.status == Status.SYNTAX_ERROR:
             syntax_errors += 1
+            if getattr(args, 'print_errors', False) and len(error_samples) < max_samples:
+                error_samples.append((q, res.errstr))
 
     print(f"Executed {executed} queries. Syntax errors: {syntax_errors}")
+    if getattr(args, 'print_errors', False) and error_samples:
+        print("\nSample syntax errors (showing up to", len(error_samples), "):")
+        for i, (q, err) in enumerate(error_samples, 1):
+            print(f"[{i}] Error: {err}")
+            print(f"    Query: {q}")
     return 0
 
 
@@ -288,10 +407,12 @@ def build_parser() -> argparse.ArgumentParser:
     # Production scenario options
     parser.add_argument("--production-scenario", dest="production_scenario", help="Name keyword of production scenario (e.g., bank, ecommerce). With mode=production, will emit scenario DDL and mixed workload queries.")
 
-    # Exec mode options (execute against a live PostgreSQL database)
-    parser.add_argument("--dsn", help="PostgreSQL DSN for exec mode, e.g. postgresql://user:pass@localhost:5432/db")
+    # Exec mode options (execute against a live PostgreSQL/YugabyteDB database)
+    parser.add_argument("--dsn", help="PostgreSQL-compatible DSN for exec mode, e.g. postgresql://user:pass@localhost:5433/postgres (YugabyteDB)")
     parser.add_argument("--use-filter", dest="use_filter", action="store_true", help="Use PostgreSQL compatibility filter before executing queries")
     parser.add_argument("--alters-per-table", dest="alters_per_table", type=int, default=2, help="Max ALTERs per table in exec mode")
+    parser.add_argument("--print-errors", dest="print_errors", action="store_true", help="Print sample SQL syntax errors encountered during execution")
+    parser.add_argument("--error-samples", dest="error_samples", type=int, default=10, help="Max number of error samples to print with --print-errors")
 
     return parser
 

@@ -53,6 +53,90 @@ python -m pyrqg.runner scenario --file production_scenarios\workloads\01_ecommer
 python -m pyrqg.runner exec --dsn "postgresql://postgres:password@localhost:5432/postgres" --num-tables 20 --count 100000 --use-filter
 ```
 
+### Local Database (PostgreSQL) - Quick Launch
+
+Use Docker to start a local PostgreSQL that matches the default DSN used in this repo (user=postgres, password=password, db=postgres, port=5432):
+
+```bash
+docker run --name pyrqg-postgres \
+  -e POSTGRES_PASSWORD=password \
+  -e POSTGRES_USER=postgres \
+  -e POSTGRES_DB=postgres \
+  -p 5432:5432 \
+  -v pgdata_pyrqg:/var/lib/postgresql/data \
+  -d postgres:16
+```
+
+Quick check the database is up:
+
+```bash
+psql "postgresql://postgres:password@localhost:5432/postgres" -c "SELECT version();"
+```
+
+Notes:
+- The configs (e.g., configs/quick_test.json) assume a database named "postgres"; the tool will create and use the "pyrqg" schema automatically via DDL.
+- Stop and remove when done: `docker rm -f pyrqg-postgres`.
+- For a clean slate, also remove the volume: `docker volume rm pgdata_pyrqg`.
+
+### Local Database (YugabyteDB, port 5433) - Quick Launch
+
+YugabyteDB speaks the PostgreSQL wire protocol. Launch a local single-node cluster with tserver on port 5433:
+
+```bash
+docker network create ybnet || true
+
+# Start master
+docker run -d --name yb-master --net ybnet \
+  -p 7000:7000 \
+  yugabytedb/yugabyte:latest \
+  bin/yb-master \
+    --master_addresses=yb-master:7100 \
+    --rpc_bind_addresses=yb-master:7100 \
+    --webserver_interface=0.0.0.0
+
+# Start tserver (PostgreSQL compatible listener on 5433)
+docker run -d --name yb-tserver --net ybnet \
+  -p 5433:5433 -p 9000:9000 \
+  -e YB_MASTER_ADDRESSES=yb-master:7100 \
+  yugabytedb/yugabyte:latest \
+  bin/yb-tserver \
+    --tserver_master_addrs=yb-master:7100 \
+    --rpc_bind_addresses=yb-tserver:9100 \
+    --pgsql_proxy_bind_address=0.0.0.0:5433 \
+    --cql_proxy_bind_address=0.0.0.0:9042 \
+    --webserver_interface=0.0.0.0
+```
+
+Quick check:
+
+```bash
+psql "postgresql://postgres:password@localhost:5433/postgres" -c "SELECT version();"
+```
+
+Run PyRQG against YugabyteDB and print sample SQL errors:
+
+```bash
+# Generate DDL + DML and execute, showing up to 10 syntax errors
+python -m pyrqg.runner exec \
+  --dsn "postgresql://postgres:password@localhost:5433/postgres" \
+  --num-tables 10 \
+  --count 200 \
+  --print-errors --error-samples 10
+```
+
+Alternatively, use the provided config:
+
+```bash
+python -m pyrqg.runner grammar --grammar dml_yugabyte --count 50
+# Or run production settings oriented for Yugabyte (see docs)
+python -m pyrqg.runner production --config yugabyte --count 1000
+```
+
+Notes:
+- YugabyteDB uses port 5433 by default; DSN scheme remains postgresql.
+- A convenience config is included: configs/yugabyte_local.json.
+- For a quick schema, our DDL uses schema pyrqg and sets search_path accordingly.
+
 
 ### Using the Python API
 
@@ -238,7 +322,3 @@ Notes:
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Contributing
-
-Contributions are welcome! Please read our [Contributing Guide](CONTRIBUTING.md) for details on our code of conduct and the process for submitting pull requests.
