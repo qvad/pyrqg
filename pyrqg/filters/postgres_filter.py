@@ -324,16 +324,29 @@ class PostgreSQLFilter:
             query = re.sub(r'JOIN\s+(\w+)', r'JOIN \1 ON TRUE', query, flags=re.IGNORECASE)
         
         # 7. Fix undefined functions
+        # Guard against mistaking table names followed by a column list in INSERT as a function call.
+        # Example broken case: "INSERT INTO rt_2 (col) VALUES ..." where "rt_2 (" was treated as a function.
         for func in query_info.functions:
             if func.upper() not in self.analyzer.sql_functions:
-                # Replace with a safe alternative
-                if 'LAST' in func.upper():
-                    query = re.sub(rf'\b{func}\s*\(\s*\)', '1', query, flags=re.IGNORECASE)
-                elif 'VAL' in func.upper():
-                    query = re.sub(rf'\b{func}\s*\(\s*\)', '1', query, flags=re.IGNORECASE)
+                # If the token is actually a referenced table name in this query, skip replacement
+                if func in getattr(query_info, 'tables', []) and query_info.query_type == 'INSERT':
+                    continue
+                # Additionally, avoid replacing immediately after "INSERT INTO"
+                # by requiring that the candidate isn't preceded by "INSERT\s+INTO\s+"
+                # We implement this by doing a manual search and conditional replacement.
+                pattern_full = rf"\b{func}\s*\([^)]*\)"
+                def _safe_replace(m):
+                    start = m.start()
+                    prefix = query[max(0, start-20):start].upper()
+                    if re.search(r"INSERT\s+INTO\s+$", prefix):
+                        return m.group(0)  # leave unchanged
+                    # Replace with a safe literal '1'
+                    return '1'
+                # Apply replacements using function-specific heuristics
+                if 'LAST' in func.upper() or 'VAL' in func.upper():
+                    query = re.sub(rf"\b{func}\s*\(\s*\)", _safe_replace, query, flags=re.IGNORECASE)
                 else:
-                    # Remove function call
-                    query = re.sub(rf'\b{func}\s*\([^)]*\)', '1', query, flags=re.IGNORECASE)
+                    query = re.sub(pattern_full, _safe_replace, query, flags=re.IGNORECASE)
         
         return query
     

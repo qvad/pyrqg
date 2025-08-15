@@ -58,6 +58,7 @@ python -m pyrqg.runner exec --dsn "postgresql://postgres:password@localhost:5432
 Use Docker to start a local PostgreSQL that matches the default DSN used in this repo (user=postgres, password=password, db=postgres, port=5432):
 
 ```bash
+# Linux/macOS shell
 docker run --name pyrqg-postgres \
   -e POSTGRES_PASSWORD=password \
   -e POSTGRES_USER=postgres \
@@ -67,16 +68,40 @@ docker run --name pyrqg-postgres \
   -d postgres:16
 ```
 
+Windows PowerShell:
+
+```powershell
+# One line (recommended in PowerShell)
+docker run --name pyrqg-postgres -e POSTGRES_PASSWORD=password -e POSTGRES_USER=postgres -e POSTGRES_DB=postgres -p 5432:5432 -v pgdata_pyrqg:/var/lib/postgresql/data -d postgres:16
+```
+
 Quick check the database is up:
 
 ```bash
 psql "postgresql://postgres:password@localhost:5432/postgres" -c "SELECT version();"
 ```
 
+If you don't have psql installed locally on Windows, you can check via Docker:
+
+```powershell
+docker exec -it pyrqg-postgres psql -U postgres -d postgres -c "SELECT version();"
+```
+
+Run PyRQG end-to-end against this local PostgreSQL (Windows PowerShell):
+
+```powershell
+# Activate venv if not yet active
+python -m venv .venv; .\.venv\Scripts\Activate.ps1; pip install -r requirements.txt
+
+# Execute: create random tables, apply ALTERs, then run 1,000 queries
+python -m pyrqg.runner exec --dsn "postgresql://postgres:password@localhost:5432/postgres" --num-tables 10 --count 1000 --use-filter --print-errors --error-samples 5
+```
+
 Notes:
 - The configs (e.g., configs/quick_test.json) assume a database named "postgres"; the tool will create and use the "pyrqg" schema automatically via DDL.
 - Stop and remove when done: `docker rm -f pyrqg-postgres`.
 - For a clean slate, also remove the volume: `docker volume rm pgdata_pyrqg`.
+- Make sure Python deps are installed (PowerShell): `python -m venv .venv; .\.venv\Scripts\Activate.ps1; pip install -r requirements.txt`.
 
 ### Local Database (YugabyteDB, port 5433) - Quick Launch
 
