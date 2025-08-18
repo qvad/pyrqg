@@ -33,6 +33,10 @@ pip install -e .
 ```bash
 # List available grammars (discoverability)
 python -m pyrqg.runner list
+# You can also just run the runner without a mode (default = list)
+python -m pyrqg.runner
+# Or use the global flag from any mode
+python -m pyrqg.runner --list-grammars
 
 # Generate random Yugabyte-focused DDL schema (5 tables)
 python -m pyrqg.runner ddl --num-tables 5 --seed 42 --output schema.sql
@@ -50,7 +54,8 @@ python -m pyrqg.runner production --config yugabyte --count 100000
 python -m pyrqg.runner scenario --file production_scenarios\workloads\01_ecommerce_workload.py --count 1000
 
 # Execute end-to-end against local PostgreSQL (creates random tables, applies ALTERs, runs queries)
-python -m pyrqg.runner exec --dsn "postgresql://postgres:password@localhost:5432/postgres" --num-tables 20 --count 100000 --use-filter
+python -m pyrqg.runner exec --dsn "postgresql://postgres:password@localhost:5432/postgres" --num-tables 20 --count 100000 --use-filter --progress-every 1000
+# Add --echo-queries to print every executed statement
 ```
 
 ### Local Database (PostgreSQL) - Quick Launch
@@ -235,6 +240,12 @@ python -m pyrqg.runner production --config yugabyte --checkpoint checkpoint.json
 
 # Production scenario (DDL + mixed workload for scenario + general workload)
 python -m pyrqg.runner production --production-scenario bank --count 1000 --seed 42 --output prod_bank.sql
+
+# Directly execute the scenario against a running DB (no intermediate file)
+python -m pyrqg.runner production --production-scenario bank --count 1000 --seed 42  --dsn "postgresql://yugabyte:yugabyte@localhost:5433/postgres" --use-filter --print-errors --error-samples 10 --progress-every 100 --echo-queries
+
+# Or generate to file and apply with psql
+psql "postgresql://yugabyte:yugabyte@localhost:5433/postgres" -f prod_bank.sql
 ```
 
 ### Performance Benchmarks

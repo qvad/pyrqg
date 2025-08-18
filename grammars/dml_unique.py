@@ -330,11 +330,11 @@ g.rule("column_list_dynamic",
 
 g.rule("select_expression",
     Lambda(lambda ctx: ', '.join([
-        (lambda f: 
-            # Don't apply DISTINCT to aggregate functions
+        (lambda f:
+            # Avoid invalid per-column DISTINCT; only allow function wrappers here
             f if any(agg in f for agg in ['COUNT(', 'SUM(', 'AVG(', 'MIN(', 'MAX(']) else
             (lambda prefix: f"{prefix}{f}{')'}" if '(' in prefix else f"{prefix}{f}")(
-                ctx.rng.choice(['', 'DISTINCT ', 'UPPER(', 'LOWER('])
+                ctx.rng.choice(['', 'UPPER(', 'LOWER('])
             )
         )(field)
         for field in ctx.rng.sample(

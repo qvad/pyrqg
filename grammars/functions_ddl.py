@@ -356,10 +356,12 @@ g.rule("exception_type",
 # Main Function Creation Rules
 # ============================================================================
 
-g.rule("create_function",
+# Create function variants coupled with language/body to avoid mismatches
+# SQL-language function
+g.rule("create_function_sql",
     template("""CREATE OR REPLACE FUNCTION {schema}.{name}({params})
 RETURNS {return_type}
-LANGUAGE {language}
+LANGUAGE SQL
 {volatility}
 {security}
 AS $function$
@@ -369,16 +371,44 @@ $function$;""",
         name=ref("function_name"),
         params=ref("function_parameter_list"),
         return_type=ref("return_type"),
-        language=ref("function_language"),
         volatility=ref("function_volatility"),
         security=ref("function_security"),
-        body=choice(ref("sql_function_body"), ref("plpgsql_function_body"))
+        body=ref("sql_function_body")
     )
 )
 
+# PL/pgSQL-language function
+g.rule("create_function_plpgsql",
+    template("""CREATE OR REPLACE FUNCTION {schema}.{name}({params})
+RETURNS {return_type}
+LANGUAGE PLPGSQL
+{volatility}
+{security}
+AS $function$
+{body}
+$function$;""",
+        schema=ref("schema_name"),
+        name=ref("function_name"),
+        params=ref("function_parameter_list"),
+        return_type=ref("return_type"),
+        volatility=ref("function_volatility"),
+        security=ref("function_security"),
+        body=ref("plpgsql_function_body")
+    )
+)
+
+# Top-level create_function chooses between the two valid variants
+g.rule("create_function",
+    choice(
+        ref("create_function_sql"),
+        ref("create_function_plpgsql")
+    )
+)
+
+# Restrict procedures to PL/pgSQL since the body uses DECLARE/BEGIN/END
 g.rule("create_procedure",
     template("""CREATE OR REPLACE PROCEDURE {schema}.{name}({params})
-LANGUAGE {language}
+LANGUAGE PLPGSQL
 {security}
 AS $procedure$
 {body}
@@ -386,7 +416,6 @@ $procedure$;""",
         schema=ref("schema_name"),
         name=ref("function_name"),
         params=ref("function_parameter_list"),
-        language=ref("function_language"),
         security=ref("function_security"),
         body=ref("procedure_body")
     )

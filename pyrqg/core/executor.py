@@ -87,6 +87,14 @@ class PostgreSQLExecutor(Executor):
         """Connect to PostgreSQL"""
         try:
             import psycopg2
+            # Log sanitized DSN details for visibility
+            try:
+                from urllib.parse import urlparse
+                p = urlparse(self.dsn)
+                safe_dsn = f"{p.scheme}://{p.hostname}:{p.port}/{(p.path or '/').lstrip('/')}"
+                logger.info(f"Connecting to PostgreSQL at {safe_dsn}")
+            except Exception:
+                logger.info("Connecting to PostgreSQL")
             self.connection = psycopg2.connect(self.dsn)
             self.connection.autocommit = True
             logger.info("Connected to PostgreSQL")
@@ -104,6 +112,12 @@ class PostgreSQLExecutor(Executor):
         
         try:
             cursor = self.connection.cursor()
+            # Debug: show a compact preview of the query
+            if logger.isEnabledFor(logging.DEBUG):
+                preview = query.strip().replace('\n', ' ')
+                if len(preview) > 300:
+                    preview = preview[:300] + '...'
+                logger.debug(f"Executing SQL: {preview}")
             cursor.execute(query)
             
             # Get affected rows
@@ -115,7 +129,8 @@ class PostgreSQLExecutor(Executor):
                 try:
                     data = cursor.fetchall()
                     rows = len(data)
-                except:
+                except Exception as fe:
+                    logger.debug(f"Fetch after execute failed (ignored): {fe}")
                     pass
             
             result = Result(
@@ -126,11 +141,15 @@ class PostgreSQLExecutor(Executor):
             )
             result.start_time = start_time
             result.end_time = time.time()
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"Execution OK in {result.end_time - start_time:.4f}s, rows={rows}")
             return result
             
         except Exception as e:
             duration = time.time() - start_time
             error_str = str(e)
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"Execution FAILED in {duration:.4f}s: {error_str}")
             
             # Determine status based on error
             status = Status.UNKNOWN_ERROR
@@ -156,7 +175,10 @@ class PostgreSQLExecutor(Executor):
         
         finally:
             if cursor:
-                cursor.close()
+                try:
+                    cursor.close()
+                except Exception:
+                    pass
 
 
 class MySQLExecutor(Executor):

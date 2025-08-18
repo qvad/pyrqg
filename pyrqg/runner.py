@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
+import logging
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -73,7 +75,32 @@ def run_production(args, forwarded: Optional[List[str]] = None) -> int:
     if HAS_PRODUCTION:
         orig_argv = sys.argv[:]  # copy
         try:
-            sys.argv = [orig_argv[0]] + (forwarded or [])
+            # Forward unknown extras plus selected global flags consumed by this runner
+            fw = list(forwarded or [])
+            # Forward DSN and execution/visibility options so production CLI can execute in real time
+            if getattr(args, 'dsn', None):
+                fw += ['--dsn', args.dsn]
+            if getattr(args, 'use_filter', False):
+                fw += ['--use-filter']
+            if getattr(args, 'print_errors', False):
+                fw += ['--print-errors']
+            if getattr(args, 'error_samples', None) is not None:
+                fw += ['--error-samples', str(args.error_samples)]
+            if getattr(args, 'echo_queries', False):
+                fw += ['--echo-queries']
+            if getattr(args, 'progress_every', None) is not None:
+                fw += ['--progress-every', str(args.progress_every)]
+            if getattr(args, 'duration', None):
+                fw += ['--duration', str(args.duration)]
+            if getattr(args, 'print_duplicates', False):
+                fw += ['--print-duplicates']
+            if getattr(args, 'duplicates_output', None):
+                fw += ['--duplicates-output', args.duplicates_output]
+            if getattr(args, 'verbose', False):
+                fw += ['--verbose']
+            if getattr(args, 'debug', False):
+                fw += ['--debug']
+            sys.argv = [orig_argv[0]] + fw
             return production_main()
         finally:
             sys.argv = orig_argv
@@ -210,11 +237,13 @@ def _resolve_scenario_files(keyword: str) -> Tuple[Optional[Path], Optional[Path
 
 
 def run_production_scenario(args) -> int:
-    """Generate DDL and mixed workload for a named production scenario.
+    """Generate and optionally execute a production scenario (DDL + mixed workload).
 
-    - Writes the scenario schema DDL first.
-    - Generates N mixed queries (70% scenario workload if available, 30% general workload).
-    - Outputs to --output if provided, otherwise stdout.
+    Behavior:
+    - Always generates the scenario DDL and N mixed queries (70% scenario, 30% general by default).
+    - If --dsn is provided, executes the DDL first and then executes the generated queries against the database.
+    - If --output is provided, also writes the combined SQL to a file for inspection/replay.
+    - If no --dsn is provided, emits the SQL to stdout or --output (legacy behavior).
     """
     if not args.production_scenario:
         raise ValueError("--production-scenario is required for production scenario mode")
@@ -251,7 +280,7 @@ def run_production_scenario(args) -> int:
     general_grammar = 'dml_yugabyte' if 'dml_yugabyte' in rqg.grammars else ('dml_unique' if 'dml_unique' in rqg.grammars else next(iter(rqg.grammars)))
     general_queries = rqg.generate_from_grammar(general_grammar, count=max(0, remaining), seed=(seed + len(scenario_queries) if seed is not None else None))
 
-    # Compose output
+    # Compose output (for optional write/print)
     parts: List[str] = []
     parts.append(ddl_sql.rstrip(';') + ';')
     all_queries = scenario_queries + general_queries
@@ -259,6 +288,64 @@ def run_production_scenario(args) -> int:
         parts.append(';' + "\n".join(q.rstrip(';') + ';' for q in all_queries))
 
     out_text = "\n\n".join(parts) + ("\n" if not parts[-1].endswith("\n") else "")
+
+    # If DSN provided: execute scenario directly
+    if getattr(args, 'dsn', None):
+        # Choose executor (optionally with filter)
+        from pyrqg.core.executor import create_executor
+        try:
+            from pyrqg.core.filtered_executor import create_filtered_executor
+        except Exception:
+            create_filtered_executor = None  # type: ignore
+
+        use_filter = getattr(args, 'use_filter', False)
+        executor = (create_filtered_executor(args.dsn) if (use_filter and create_filtered_executor is not None)
+                    else create_executor(args.dsn))
+
+        # Execute DDL as a single batch to preserve function bodies/dollar-quoting
+        ddl_to_run = ddl_sql if ddl_sql.endswith(';') else (ddl_sql + ';')
+        executor.execute(ddl_to_run)
+
+        # Execute workload queries one by one, track errors
+        from pyrqg.core.constants import Status
+        syntax_errors = 0
+        executed = 0
+        error_samples = []
+        max_samples = getattr(args, 'error_samples', 10)
+        print_errors = getattr(args, 'print_errors', False)
+
+        start_time = time.time()
+        progress_every = getattr(args, 'progress_every', 0) or 0
+        echo_queries = getattr(args, 'echo_queries', False)
+
+        for q in all_queries:
+            if echo_queries:
+                print(f"[{executed + 1}] {q}")
+            res = executor.execute(q)
+            executed += 1
+            if res.status == Status.SYNTAX_ERROR:
+                syntax_errors += 1
+                if print_errors and len(error_samples) < max_samples:
+                    error_samples.append((q, res.errstr))
+            if progress_every and executed % progress_every == 0:
+                elapsed = max(1e-6, time.time() - start_time)
+                qps = executed / elapsed
+                print(f"Progress: executed={executed}, syntax_errors={syntax_errors}, qps={qps:.1f}", flush=True)
+
+        print(f"Scenario '{args.production_scenario}': Executed {executed} queries. Syntax errors: {syntax_errors}")
+        if print_errors and error_samples:
+            print("\nSample syntax errors (showing up to", len(error_samples), "):")
+            for i, (q, err) in enumerate(error_samples, 1):
+                print(f"[{i}] Error: {err}")
+                print(f"    Query: {q}")
+
+        # Optionally write SQL for audit
+        if args.output:
+            Path(args.output).write_text(out_text, encoding='utf-8')
+            print(f"Scenario '{args.production_scenario}' DDL + {len(all_queries)} queries also written to {args.output}")
+        return executed
+
+    # Legacy behavior: no DSN, just print/write SQL
     if args.output:
         Path(args.output).write_text(out_text, encoding='utf-8')
         print(f"Scenario '{args.production_scenario}' DDL + {len(all_queries)} queries written to {args.output}")
@@ -330,14 +417,24 @@ def run_exec(args) -> int:
     error_samples = []
     max_samples = getattr(args, 'error_samples', 10)
 
+    start_time = time.time()
+    progress_every = getattr(args, 'progress_every', 0) or 0
+    echo_queries = getattr(args, 'echo_queries', False)
+
     for _ in range(total):
         q = qgen.generate_batch(1)[0].sql
+        if echo_queries:
+            print(f"[{executed + 1}] {q}", flush=True)
         res = executor.execute(q)
         executed += 1
         if res.status == Status.SYNTAX_ERROR:
             syntax_errors += 1
             if getattr(args, 'print_errors', False) and len(error_samples) < max_samples:
                 error_samples.append((q, res.errstr))
+        if progress_every and executed % progress_every == 0:
+            elapsed = max(1e-6, time.time() - start_time)
+            qps = executed / elapsed
+            print(f"Progress: executed={executed}, syntax_errors={syntax_errors}, qps={qps:.1f}", flush=True)
 
     print(f"Executed {executed} queries. Syntax errors: {syntax_errors}")
     if getattr(args, 'print_errors', False) and error_samples:
@@ -384,7 +481,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="PyRQG Runner - yugabyte-focused",
     )
 
-    parser.add_argument("mode", choices=["ddl", "grammar", "production", "scenario", "list", "exec"], help="Runner mode")
+    parser.add_argument("mode", nargs='?', default='list', choices=["ddl", "grammar", "production", "scenario", "list", "exec"], help="Runner mode (default: list)")
     parser.add_argument("--db", default="yugabyte", choices=["yugabyte", "postgresql"], help="Target database")
     parser.add_argument("--dialect", default=None, help="SQL dialect override")
     parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility")
@@ -413,6 +510,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--alters-per-table", dest="alters_per_table", type=int, default=2, help="Max ALTERs per table in exec mode")
     parser.add_argument("--print-errors", dest="print_errors", action="store_true", help="Print sample SQL syntax errors encountered during execution")
     parser.add_argument("--error-samples", dest="error_samples", type=int, default=10, help="Max number of error samples to print with --print-errors")
+    parser.add_argument("--echo-queries", dest="echo_queries", action="store_true", help="Echo each executed query to stdout")
+    parser.add_argument("--progress-every", dest="progress_every", type=int, default=0, help="Print a progress line every N executed queries (0=disable)")
+    parser.add_argument("--duration", type=int, default=0, help="Run for N seconds instead of a fixed count in production mode (forwarded)")
+    parser.add_argument("--print-duplicates", dest="print_duplicates", action="store_true", help="Collect/print duplicates when high duplicate rate is detected (production; forwarded)")
+    parser.add_argument("--duplicates-output", dest="duplicates_output", help="Optional file to write duplicates (production; forwarded)")
+
+    # Convenience: list grammars regardless of mode
+    parser.add_argument("--list-grammars", action="store_true", help="List all available grammars and exit")
+
+    # Verbosity
+    parser.add_argument("--verbose", action="store_true", help="Enable INFO level logging with timestamps")
+    parser.add_argument("--debug", action="store_true", help="Enable DEBUG level logging (very verbose)")
 
     return parser
 
@@ -422,7 +531,21 @@ def main(argv: Optional[List[str]] = None) -> int:
     # Parse known args and forward the rest to production CLI if needed
     args, extras = parser.parse_known_args(argv)
 
-    if args.mode == "ddl":
+    # Configure root logging early
+    if args.debug:
+        logging.basicConfig(level=logging.DEBUG, format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
+    elif args.verbose:
+        logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
+
+    # Global quick action: list grammars and exit
+    if getattr(args, 'list_grammars', False):
+        rqg = RQG()
+        grams = rqg.list_grammars()
+        for name, desc in sorted(grams.items()):
+            print(f"{name}: {desc}")
+        return 0
+
+    if args.mode == "ddl": 
         return run_ddl(args)
     elif args.mode == "grammar":
         if not args.grammar:
