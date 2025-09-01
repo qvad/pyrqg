@@ -5,10 +5,13 @@ Achieves 99%+ query uniqueness through aggressive randomization
 
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from pyrqg.dsl.core import Grammar, choice, template, ref, number, maybe, repeat
-import psycopg2
+from pyrqg.dsl.core import Grammar, choice, template, ref, number, maybe, repeat, Lambda
+from pyrqg.perfect_schema_registry import get_perfect_registry
+try:
+    import psycopg2  # type: ignore
+except Exception:
+    psycopg2 = None
 import random
 import time
 
@@ -96,17 +99,51 @@ g.rule("query",
 
 g.rule("query_body",
     choice(
-        ref("isolation_level_tests"),
-        ref("locking_tests"),
-        ref("mvcc_tests"),
-        ref("deadlock_scenarios"),
-        ref("race_condition_tests"),
-        ref("serialization_anomalies"),
-        ref("complex_transaction_patterns"),  # NEW
-        ref("random_workload_mix"),          # NEW
-        weights=[15, 15, 10, 10, 15, 15, 10, 10]
+        ref("safe_mix"),
+        ref("safe_ro_iso"),
+        weights=[70, 30]
     )
 )
+
+# Schema-aware safe replacements
+def _pick_table(ctx):
+    reg = get_perfect_registry()
+    ts = reg.get_tables()
+    return ctx.rng.choice(ts) if ts else "public"
+
+def _pick_numeric(ctx, t):
+    reg = get_perfect_registry()
+    cols = reg.get_insertable_columns(t)
+    tname = t.split('.')[-1] if '.' in t else t
+    nums = []
+    for c in cols:
+        dt = reg.column_types.get(f"{tname}.{c}")
+        if dt in ('integer','bigint','numeric','decimal','real','double precision'):
+            nums.append(c)
+    return ctx.rng.choice(nums) if nums else (cols[0] if cols else 'id')
+
+def _pick_pk(ctx, t):
+    reg = get_perfect_registry()
+    for c in ('id','pk','row_id','pk_id','record_id'):
+        if reg.column_exists(t, c):
+            return c
+    cols = reg.get_insertable_columns(t)
+    return cols[0] if cols else 'id'
+
+def _safe_mix(ctx):
+    t = _pick_table(ctx)
+    num = _pick_numeric(ctx, t)
+    pk = _pick_pk(ctx, t)
+    return (f"BEGIN;\nSELECT {num} FROM {t} WHERE {pk} = 1 FOR UPDATE;\n"
+            f"UPDATE {t} SET {num} = {num} + 1 WHERE {pk} = 1;\nCOMMIT;")
+
+def _safe_ro_iso(ctx):
+    t = _pick_table(ctx)
+    num = _pick_numeric(ctx, t)
+    return (f"BEGIN ISOLATION LEVEL REPEATABLE READ;\nSELECT COUNT(*) FROM {t} WHERE {num} > 0;\nCOMMIT;")
+
+g.rule("safe_mix", Lambda(_safe_mix))
+g.rule("safe_ro_iso", Lambda(_safe_ro_iso))
 
 # Enhanced isolation tests with more randomization
 g.rule("isolation_level_tests",

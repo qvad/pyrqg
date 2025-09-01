@@ -1,6 +1,6 @@
 # Production Scenarios for PyRQG
 
-This directory contains 20 unique business scenarios with realistic schemas and workloads for comprehensive database testing.
+This directory contains business scenarios with realistic schemas and workloads for comprehensive database testing.
 
 ## Scenarios Overview
 
@@ -29,8 +29,9 @@ This directory contains 20 unique business scenarios with realistic schemas and 
 
 ```
 production_scenarios/
-├── schemas/          # DDL for each scenario
-├── workloads/        # Workload generators
+├── schemas/          # Legacy: DDL per scenario
+├── workloads/        # Legacy: workload generators (queries only)
+├── scenarios/        # Single-file scenarios (schema + queries)
 ├── configs/          # Configuration files
 └── reports/          # Test results and metrics
 ```
@@ -39,6 +40,21 @@ production_scenarios/
 
 Each scenario includes:
 - Schema definition (DDL)
-- Sample data generation
 - Realistic workload patterns
-- Performance benchmarks
+
+## Single-file Scenarios (recommended)
+
+Keep schema and queries together in one Python file, or reference external schema files under `schem.files/` at the repo root.
+
+Single-file module must export:
+- `grammar` (or `g`): a `pyrqg.dsl.core.Grammar` with `rule("query", ...)`
+- either `schema_sql: str` or `schema_files: list[str]` (filenames relative to `schem.files/`)
+
+Example: `production_scenarios/scenarios/ecommerce_scenario.py` with `schema_files = ["ecommerce.sql"]`.
+
+Run via runner:
+```
+python -m pyrqg.runner production \
+  --production-scenario production_scenarios/scenarios/ecommerce_scenario.py \
+  --count 200
+```

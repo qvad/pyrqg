@@ -5,7 +5,6 @@ Covers range types, multirange types, geometric types, and specialized types
 
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from pyrqg.dsl.core import Grammar, choice, template, ref, number, maybe, repeat, Lambda
 

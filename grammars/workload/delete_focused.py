@@ -56,7 +56,7 @@ def generate_delete(ctx, simple=False, with_subquery=False, with_using=False, ca
     
     # Pick a random table
     table = ctx.rng.choice(registry.get_tables())
-    columns = registry.tables[table]
+    columns = registry.get_insertable_columns(table)
     
     if simple:
         # Simple DELETE with WHERE
@@ -77,7 +77,7 @@ def generate_delete(ctx, simple=False, with_subquery=False, with_using=False, ca
             # Find another table that has the same column
             other_tables = []
             for t in registry.get_tables():
-                if t != table and col in registry.tables[t]:
+                if t != table and registry.column_exists(t, col):
                     other_tables.append(t)
             
             if other_tables:
@@ -99,7 +99,7 @@ def generate_delete(ctx, simple=False, with_subquery=False, with_using=False, ca
         # Find common columns for join
         common_cols = []
         for col in ['user_id', 'customer_id', 'product_id', 'order_id']:
-            if col in columns and col in registry.tables[table2]:
+            if col in columns and registry.column_exists(table2, col):
                 common_cols.append(col)
         
         if common_cols:
@@ -144,7 +144,7 @@ def generate_delete(ctx, simple=False, with_subquery=False, with_using=False, ca
 def generate_where_clause(ctx, table):
     """Generate WHERE clause using actual table columns"""
     registry = get_perfect_registry()
-    columns = registry.tables[table]
+    columns = registry.get_insertable_columns(table)
     
     conditions = []
     
@@ -166,8 +166,9 @@ def generate_where_clause(ctx, table):
     
     # Numeric conditions (zero quantity, negative balance, etc.)
     numeric_cols = []
+    tname = table.split('.')[-1] if '.' in table else table
     for col in columns:
-        data_type = registry.column_types.get(f"{table}.{col}")
+        data_type = registry.column_types.get(f"{tname}.{col}")
         if data_type in ['integer', 'bigint', 'numeric', 'decimal']:
             numeric_cols.append(col)
     
@@ -183,7 +184,7 @@ def generate_where_clause(ctx, table):
     # Boolean conditions
     bool_cols = []
     for col in columns:
-        data_type = registry.column_types.get(f"{table}.{col}")
+        data_type = registry.column_types.get(f"{tname}.{col}")
         if data_type == 'boolean':
             bool_cols.append(col)
     
@@ -212,7 +213,7 @@ def generate_where_clause(ctx, table):
 def generate_delete_condition(ctx, table):
     """Generate specific delete conditions for DELETE USING"""
     registry = get_perfect_registry()
-    columns = registry.tables[table]
+    columns = registry.get_insertable_columns(table)
     
     conditions = []
     

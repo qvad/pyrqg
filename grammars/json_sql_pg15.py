@@ -5,7 +5,6 @@ Implements JSON_TABLE, JSON_EXISTS, JSON_QUERY, and enhanced JSON functions
 
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from pyrqg.dsl.core import Grammar, choice, template, ref, number, maybe, repeat, Lambda
 

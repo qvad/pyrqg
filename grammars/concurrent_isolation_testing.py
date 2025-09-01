@@ -7,9 +7,9 @@ Tests transaction isolation levels, locking, MVCC, deadlocks, and concurrency ed
 
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from pyrqg.dsl.core import Grammar, choice, template, ref, number, maybe
+from pyrqg.dsl.core import Grammar, choice, template, ref, number, maybe, Lambda
+from pyrqg.perfect_schema_registry import get_perfect_registry
 
 # Uniqueness helpers
 def random_suffix():
@@ -20,7 +20,10 @@ def random_id():
     """Generate high-entropy ID"""
     return random.randint(1, 10000000)
 
-import psycopg2
+try:
+    import psycopg2  # type: ignore
+except Exception:  # psycopg2 optional at import-time; functions fallback safely
+    psycopg2 = None
 
 # Get real database schema for isolation testing
 def get_test_schema():
@@ -104,18 +107,67 @@ if not numeric_columns:
 
 g = Grammar("concurrent_isolation_testing")
 
-# Main concurrency test patterns
-g.rule("query",
-    choice(
-        ref("isolation_level_tests"),
-        ref("locking_tests"),
-        ref("mvcc_tests"),
-        ref("deadlock_scenarios"),
-        ref("race_condition_tests"),
-        ref("serialization_anomalies"),
-        weights=[20, 20, 15, 15, 15, 15]
-    )
-)
+# ============ Schema-aware safe generators ============
+def _pick_table(ctx):
+    reg = get_perfect_registry()
+    ts = reg.get_tables()
+    return ctx.rng.choice(ts) if ts else "public"
+
+def _pick_numeric(ctx, t):
+    reg = get_perfect_registry()
+    cols = reg.get_insertable_columns(t)
+    tname = t.split('.')[-1] if '.' in t else t
+    nums = []
+    for c in cols:
+        dt = reg.column_types.get(f"{tname}.{c}")
+        if dt in ('integer','bigint','numeric','decimal','real','double precision'):
+            nums.append(c)
+    return ctx.rng.choice(nums) if nums else (cols[0] if cols else 'id')
+
+def _pick_pk(ctx, t):
+    reg = get_perfect_registry()
+    for c in ('id','pk','row_id','pk_id','record_id'):
+        if reg.column_exists(t, c):
+            return c
+    cols = reg.get_insertable_columns(t)
+    return cols[0] if cols else 'id'
+
+def _safe_iso(ctx):
+    t = _pick_table(ctx)
+    num = _pick_numeric(ctx, t)
+    pk = _pick_pk(ctx, t)
+    lvl = choice("READ COMMITTED","REPEATABLE READ","SERIALIZABLE").generate(ctx)
+    return f"BEGIN ISOLATION LEVEL {lvl};\nSELECT SUM({num}) FROM {t};\nUPDATE {t} SET {num} = {num} + 1 WHERE {pk} = 1;\nCOMMIT;"
+
+def _safe_nowait(ctx):
+    t = _pick_table(ctx)
+    num = _pick_numeric(ctx, t)
+    pk = _pick_pk(ctx, t)
+    return f"BEGIN;\nSELECT * FROM {t} WHERE {pk} = 1 FOR UPDATE NOWAIT;\nUPDATE {t} SET {num} = {num} * 2 WHERE {pk} = 1;\nCOMMIT;"
+
+def _safe_lost_update(ctx):
+    t = _pick_table(ctx)
+    num = _pick_numeric(ctx, t)
+    pk = _pick_pk(ctx, t)
+    return (f"-- Lost update test\nSELECT {num} INTO TEMP lost_update_test FROM {t} WHERE {pk} = 1;\n"
+            f"UPDATE {t} SET {num} = (SELECT {num} FROM lost_update_test) + 1 WHERE {pk} = 1;")
+
+def _safe_predicate(ctx):
+    t = _pick_table(ctx)
+    num = _pick_numeric(ctx, t)
+    a = ctx.rng.randint(10,20)
+    b = a + ctx.rng.randint(1,10)
+    ins = ctx.rng.randint(a, b)
+    return (f"BEGIN ISOLATION LEVEL SERIALIZABLE;\nSELECT * FROM {t} WHERE {num} BETWEEN {a} AND {b};\n"
+            f"INSERT INTO {t} ({num}) VALUES ({ins});\nCOMMIT;")
+
+g.rule("safe_iso", Lambda(_safe_iso))
+g.rule("safe_nowait", Lambda(_safe_nowait))
+g.rule("safe_lost_update", Lambda(_safe_lost_update))
+g.rule("safe_predicate", Lambda(_safe_predicate))
+
+# Override main rule with safe schema-aware variants
+g.rule("query", choice(ref("safe_iso"), ref("safe_nowait"), ref("safe_lost_update"), ref("safe_predicate"), weights=[30,30,20,20]))
 
 # Transaction isolation level tests
 g.rule("isolation_level_tests",
@@ -245,11 +297,10 @@ INSERT INTO {child_table} ({fk_column}) VALUES (1);
 COMMIT;"""),
         
         # Index order deadlock
-        template("""-- Index-order deadlock prone pattern
+        template("""-- Index-order contention pattern (PostgreSQL-compatible)
 BEGIN;
 UPDATE {table} SET {numeric_column} = {numeric_column} + 1 
-WHERE {pk_column} IN (1, 2, 3)
-ORDER BY {pk_column} DESC;
+WHERE {pk_column} IN (1, 2, 3);
 COMMIT;""")
     )
 )

@@ -8,7 +8,6 @@ Clean and readable Python DSL approach!
 
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from pyrqg.dsl.core import (
     Grammar, choice, maybe, repeat, template, table, field, 
@@ -45,10 +44,12 @@ g.define_fields(
 
 # Main query rule
 g.rule("query", 
-    template("{maybe_txn} {body} {maybe_commit}",
-        maybe_txn=maybe("START TRANSACTION", 0.5),
+    template("{maybe_txn}{body}{maybe_commit}",
+        # Ensure valid statement separators when a transaction is used
+        maybe_txn=maybe("START TRANSACTION ; ", 0.5),
         body=repeat(ref("operation"), min=1, max=3, sep=" ; "),
-        maybe_commit=maybe(choice("COMMIT", "ROLLBACK"), 0.5)
+        # If present, prepend a separator and terminate properly
+        maybe_commit=maybe(choice(" ; COMMIT", " ; ROLLBACK"), 0.5)
     )
 )
 

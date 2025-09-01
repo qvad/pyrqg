@@ -67,7 +67,7 @@ def generate_select(ctx, simple=False, with_where=False, with_join=False,
     
     # Pick a random table
     table = ctx.rng.choice(registry.get_tables())
-    columns = registry.tables[table]
+    columns = registry.get_insertable_columns(table)
     
     if simple:
         # Simple SELECT
@@ -87,13 +87,13 @@ def generate_select(ctx, simple=False, with_where=False, with_join=False,
         # Find common columns for join
         common_id_cols = []
         for col in ['id', 'user_id', 'customer_id', 'product_id', 'order_id']:
-            if col in columns and col in registry.tables[table2]:
+            if col in columns and registry.column_exists(table2, col):
                 common_id_cols.append(col)
         
         if common_id_cols:
             join_col = ctx.rng.choice(common_id_cols)
             cols1 = generate_table_columns(ctx, table, columns, 't1')
-            cols2 = generate_table_columns(ctx, table2, registry.tables[table2], 't2')
+            cols2 = generate_table_columns(ctx, table2, registry.get_insertable_columns(table2), 't2')
             
             join_type = ctx.rng.choice(['INNER', 'LEFT', 'RIGHT'])
             where = generate_where_clause(ctx, table, 't1')
@@ -197,7 +197,7 @@ def generate_table_columns(ctx, table, columns, alias):
 def generate_where_clause(ctx, table, alias=None):
     """Generate WHERE clause using actual table columns"""
     registry = get_perfect_registry()
-    columns = registry.tables[table]
+    columns = registry.get_insertable_columns(table)
     
     prefix = f"{alias}." if alias else ""
     
@@ -246,8 +246,9 @@ def generate_where_clause(ctx, table, alias=None):
 def get_numeric_columns(ctx, table, columns, registry):
     """Get numeric columns from a table"""
     numeric_cols = []
+    tname = table.split('.')[-1] if '.' in table else table
     for col in columns:
-        data_type = registry.column_types.get(f"{table}.{col}")
+        data_type = registry.column_types.get(f"{tname}.{col}")
         if data_type in ['integer', 'bigint', 'numeric', 'decimal', 'real', 'double precision']:
             numeric_cols.append(col)
     return numeric_cols

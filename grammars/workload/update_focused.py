@@ -64,7 +64,7 @@ def generate_update(ctx, simple=False, with_where=False, multi_column=False,
     table = ctx.rng.choice(registry.get_tables())
     
     # Get updateable columns (exclude id)
-    columns = [c for c in registry.tables[table] if c != 'id']
+    columns = [c for c in registry.get_insertable_columns(table) if c != 'id']
     if not columns:
         return f"-- No updateable columns in {table}"
     
@@ -90,8 +90,9 @@ def generate_update(ctx, simple=False, with_where=False, multi_column=False,
     elif with_calculation:
         # Find numeric columns
         numeric_cols = []
+        tname = table.split('.')[-1] if '.' in table else table
         for col in columns:
-            data_type = registry.column_types.get(f"{table}.{col}")
+            data_type = registry.column_types.get(f"{tname}.{col}")
             if data_type in ['integer', 'bigint', 'numeric', 'decimal']:
                 numeric_cols.append(col)
         
@@ -127,7 +128,7 @@ def generate_assignment(ctx, table, column):
 def generate_where_clause(ctx, table):
     """Generate WHERE clause using actual table columns"""
     registry = get_perfect_registry()
-    columns = registry.tables[table]
+    columns = registry.get_insertable_columns(table)
     
     # Common patterns
     if 'id' in columns and ctx.rng.random() < 0.3:
@@ -138,8 +139,9 @@ def generate_where_clause(ctx, table):
     
     # Find numeric columns for range conditions
     numeric_cols = []
+    tname = table.split('.')[-1] if '.' in table else table
     for col in columns:
-        data_type = registry.column_types.get(f"{table}.{col}")
+        data_type = registry.column_types.get(f"{tname}.{col}")
         if data_type in ['integer', 'bigint', 'numeric', 'decimal']:
             numeric_cols.append(col)
     
@@ -163,7 +165,7 @@ def generate_where_clause(ctx, table):
 def get_condition_column(ctx, table):
     """Get a column suitable for CASE conditions"""
     registry = get_perfect_registry()
-    columns = registry.tables[table]
+    columns = registry.get_insertable_columns(table)
     
     # Prefer status columns
     if 'status' in columns:
@@ -171,8 +173,9 @@ def get_condition_column(ctx, table):
     
     # Numeric comparison
     numeric_cols = []
+    tname = table.split('.')[-1] if '.' in table else table
     for col in columns:
-        data_type = registry.column_types.get(f"{table}.{col}")
+        data_type = registry.column_types.get(f"{tname}.{col}")
         if data_type in ['integer', 'bigint']:
             numeric_cols.append(col)
     

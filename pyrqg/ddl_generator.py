@@ -3,7 +3,7 @@ Enhanced DDL Generator for PyRQG
 Supports complex constraints, composite keys, and realistic schemas
 """
 
-from typing import List, Optional
+from typing import List, Optional, Tuple, Dict
 from dataclasses import dataclass, field
 import random
 
@@ -61,11 +61,105 @@ class TableDefinition:
 class DDLGenerator:
     """Generate complex DDL statements"""
     
-    def __init__(self, dialect: str = "postgresql", seed: Optional[int] = None):
+    def __init__(
+        self,
+        dialect: str = "postgresql",
+        seed: Optional[int] = None,
+        profile: str = "core",
+        fk_ratio: float = 0.3,
+        index_ratio: float = 0.7,
+        composite_index_ratio: float = 0.3,
+        partial_index_ratio: float = 0.2,
+    ):
         self.dialect = dialect
         self.generated_tables = []
         # Use a local RNG for reproducibility and isolation from global random
         self.rng = random.Random(seed)
+        # Knobs
+        self.profile = profile
+        self.fk_ratio = max(0.0, min(1.0, fk_ratio))
+        self.index_ratio = max(0.0, min(1.0, index_ratio))
+        self.composite_index_ratio = max(0.0, min(1.0, composite_index_ratio))
+        self.partial_index_ratio = max(0.0, min(1.0, partial_index_ratio))
+        # Weighted data type coverage (PostgreSQL-oriented)
+        # Heavier weights for common OLTP types; include wide coverage for others.
+        base_weights = [
+            (lambda: "INTEGER", 18),
+            (lambda: "BIGINT", 16),
+            (lambda: "SMALLINT", 3),
+            (lambda: f"VARCHAR({self.rng.choice([50,100,200,255])})", 18),
+            (lambda: "TEXT", 8),
+            (lambda: f"NUMERIC({self.rng.randint(8,18)},{self.rng.choice([0,2,4])})", 7),
+            (lambda: f"DECIMAL({self.rng.randint(8,18)},{self.rng.choice([0,2,4])})", 5),
+            (lambda: "REAL", 3),
+            (lambda: "DOUBLE PRECISION", 5),
+            (lambda: "BOOLEAN", 10),
+            (lambda: "DATE", 6),
+            (lambda: "TIMESTAMP", 7),
+            (lambda: "TIMESTAMPTZ", 6),
+            (lambda: "TIME", 2),
+            (lambda: "TIMETZ", 2),
+            (lambda: "UUID", 6),
+            (lambda: "JSONB", 7),
+            (lambda: "JSON", 2),
+            (lambda: "BYTEA", 3),
+            (lambda: "INET", 2),
+            (lambda: "CIDR", 1),
+            (lambda: "MACADDR", 1),
+            (lambda: f"CHAR({self.rng.choice([1,2,10])})", 2),
+            (lambda: "MONEY", 1),
+            (lambda: "INTERVAL", 2),
+            # Range types
+            (lambda: "INT4RANGE", 1),
+            (lambda: "INT8RANGE", 1),
+            (lambda: "NUMRANGE", 1),
+            (lambda: "DATERANGE", 1),
+            (lambda: "TSRANGE", 1),
+            (lambda: "TSTZRANGE", 1),
+        ]
+        self._base_type_weights = self._apply_profile_weights(base_weights, profile)
+
+    def _apply_profile_weights(self, base: List[Tuple], profile: str) -> List[Tuple]:
+        # Copy weights to a mutable list
+        items: List[Tuple] = [(f, w) for (f, w) in base]
+        def bump(pred, factor):
+            for i, (f, w) in enumerate(items):
+                t = f()
+                if pred(t):
+                    items[i] = (lambda f=f: f(), max(1, int(w * factor)))
+        p = (profile or "core").lower()
+        if p == "json_heavy":
+            bump(lambda t: t in ("JSONB", "JSON") or t == "TEXT", 2.5)
+        elif p == "time_series":
+            bump(lambda t: t in ("TIMESTAMPTZ", "TIMESTAMP", "DATE", "INTERVAL"), 2.5)
+            bump(lambda t: "NUMERIC" in t or "DECIMAL" in t, 1.5)
+        elif p == "network_heavy":
+            bump(lambda t: t in ("INET", "CIDR", "MACADDR"), 3.0)
+        elif p == "wide_range":
+            # Flatten weights somewhat to increase diversity
+            avg = max(1, int(sum(w for _, w in items) / len(items)))
+            items = [(f, max(1, int((w + avg) / 2))) for (f, w) in items]
+        else:
+            # core: keep as-is (OLTP-heavy)
+            pass
+        return items
+
+    def _weighted_choice(self, items):
+        total = sum(w for _, w in items)
+        pick = self.rng.uniform(0, total)
+        upto = 0
+        for f, w in items:
+            if upto + w >= pick:
+                return f()
+            upto += w
+        return items[-1][0]()
+
+    def _random_data_type(self) -> str:
+        base = self._weighted_choice(self._base_type_weights)
+        # Occasionally wrap as array
+        if self.rng.random() < 0.08 and not base.endswith("[]") and base not in ("JSON", "JSONB"):
+            return f"{base}[]"
+        return base
         
     def generate_column_definition(self, col: ColumnDefinition) -> str:
         """Generate column definition SQL"""
@@ -421,15 +515,6 @@ class DDLGenerator:
         if num_constraints is None:
             num_constraints = self.rng.randint(2, 6)
         
-        # Column types
-        data_types = [
-            "INTEGER", "BIGINT", "SMALLINT",
-            "VARCHAR(50)", "VARCHAR(100)", "VARCHAR(200)", "TEXT",
-            "DECIMAL(10,2)", "NUMERIC(12,4)", "REAL", "DOUBLE PRECISION",
-            "BOOLEAN", "DATE", "TIMESTAMP", "TIME",
-            "UUID", "JSONB", "INTEGER[]", "INET", "MACADDR"
-        ]
-        
         # Generate columns
         columns = []
         column_names = []
@@ -441,7 +526,7 @@ class DDLGenerator:
         # Generate other columns
         for i in range(num_columns - 1):
             col_name = f"col_{self.rng.choice(['data', 'value', 'info', 'attr'])}_{i}"
-            col_type = self.rng.choice(data_types)
+            col_type = self._random_data_type()
             
             col = ColumnDefinition(
                 name=col_name,
@@ -507,15 +592,17 @@ class DDLGenerator:
             )
             remaining -= 1
         
-        # Generate indexes
+        # Generate indexes (density and composite controlled by knobs)
         indexes = []
-        for i in range(self.rng.randint(1, 4)):
-            idx_cols = self.rng.sample(column_names, self.rng.randint(1, 3))
+        max_idx = max(0, int(1 + round(4 * self.index_ratio)))
+        for i in range(self.rng.randint(0, max_idx)):
+            kcols = 1 if self.rng.random() > self.composite_index_ratio else self.rng.randint(2, min(3, len(column_names)))
+            idx_cols = self.rng.sample(column_names, kcols)
             index = IndexDefinition(
                 name=f"idx_{table_name}_{i}",
                 columns=idx_cols,
                 unique=self.rng.random() < 0.1,
-                where_clause=self._generate_where_clause(columns) if self.rng.random() < 0.3 else None
+                where_clause=self._generate_where_clause(columns) if (self.rng.random() < self.partial_index_ratio) else None
             )
             indexes.append(index)
         
@@ -528,28 +615,54 @@ class DDLGenerator:
     
     def _generate_default(self, data_type: str) -> Optional[str]:
         """Generate appropriate default value for data type"""
-        if "INT" in data_type:
+        if "INT" in data_type and not data_type.endswith("[]"):
             return str(self.rng.randint(0, 100))
-        elif "VARCHAR" in data_type or "TEXT" in data_type:
+        elif "VARCHAR" in data_type or "TEXT" in data_type or data_type.startswith("CHAR"):
             return "'default'"
         elif "BOOL" in data_type:
             return self.rng.choice(["true", "false"])
-        elif "TIMESTAMP" in data_type:
+        elif data_type in ("TIMESTAMPTZ", "TSRANGE", "TSTZRANGE") or "TIMESTAMP" in data_type:
             return "CURRENT_TIMESTAMP"
-        elif "DATE" in data_type:
+        elif "DATE" in data_type and "RANGE" not in data_type:
             return "CURRENT_DATE"
         elif "DECIMAL" in data_type or "NUMERIC" in data_type:
             return "0.00"
+        elif data_type == "UUID":
+            return "gen_random_uuid()"
+        elif data_type in ("JSONB", "JSON"):
+            return "'{}'::jsonb" if data_type == "JSONB" else "'{}'::json"
+        elif data_type == "BYTEA":
+            return None
+        elif data_type == "INET":
+            return "'127.0.0.1'::inet"
+        elif data_type == "CIDR":
+            return "'10.0.0.0/8'::cidr"
+        elif data_type == "MACADDR":
+            return "'08:00:2b:01:02:03'"
+        elif data_type == "MONEY":
+            return "0"
+        elif data_type.endswith("[]"):
+            base = data_type[:-2]
+            if base in ("INTEGER", "BIGINT", "SMALLINT"):
+                return "ARRAY[1,2,3]"
+            elif base.startswith("VARCHAR") or base == "TEXT":
+                return "ARRAY['a','b']"
+            elif base in ("NUMERIC", "DECIMAL"):
+                return "ARRAY[1.0,2.0]"
+            else:
+                return None
         return None
     
     def _generate_check(self, col_name: str, data_type: str) -> Optional[str]:
         """Generate check constraint for column"""
-        if "INT" in data_type:
+        if "INT" in data_type and not data_type.endswith("[]"):
             return f"{col_name} >= 0"
-        elif "VARCHAR" in data_type:
+        elif "VARCHAR" in data_type or data_type.startswith("CHAR"):
             return f"LENGTH({col_name}) > 0"
-        elif "DECIMAL" in data_type:
+        elif "DECIMAL" in data_type or "NUMERIC" in data_type:
             return f"{col_name} >= 0"
+        elif data_type.endswith("[]"):
+            return f"array_length({col_name}, 1) >= 0"
         return None
     
     def _generate_table_check(self, columns: List[ColumnDefinition]) -> Optional[str]:
@@ -565,10 +678,14 @@ class DDLGenerator:
         if bool_cols:
             return f"{bool_cols[0]} = true"
         
-        varchar_cols = [c.name for c in columns if "VARCHAR" in c.data_type]
+        varchar_cols = [c.name for c in columns if ("VARCHAR" in c.data_type or c.data_type.startswith("CHAR"))]
         if varchar_cols:
             return f"{varchar_cols[0]} IS NOT NULL"
         
+        json_cols = [c.name for c in columns if c.data_type in ("JSONB", "JSON")]
+        if json_cols:
+            return f"{json_cols[0]} IS NOT NULL"
+
         return None
     
     def generate_schema(self, num_tables: int = 5) -> List[str]:
@@ -593,8 +710,56 @@ class DDLGenerator:
             # Add indexes
             for index in table.indexes:
                 ddl_statements.append(self.generate_create_index(table.name, index))
-        
+        # Add cross-table foreign keys per fk_ratio
+        ddl_statements.extend(self._generate_cross_table_fks(tables))
         return ddl_statements
+
+    def _generate_cross_table_fks(self, tables: List[TableDefinition]) -> List[str]:
+        if self.fk_ratio <= 0.0 or len(tables) < 2:
+            return []
+        # Build map of candidate referenced tables (prefer PK id)
+        tmeta: Dict[str, Dict[str, str]] = {}
+        for t in tables:
+            pk_cols = [c for c in t.columns if c.name == 'id']
+            if pk_cols:
+                tmeta[t.name] = {"pk": pk_cols[0].data_type}
+        if not tmeta:
+            return []
+        out: List[str] = []
+        for t in tables:
+            # probability based on fk_ratio to add 0..2 FKs to other tables
+            if self.rng.random() > self.fk_ratio:
+                continue
+            n = 1 if self.rng.random() < 0.7 else 2
+            for _ in range(n):
+                ref_table = self.rng.choice([n for n in tmeta.keys() if n != t.name]) if len(tmeta) > 1 else None
+                if not ref_table:
+                    continue
+                # Find/create a referring column compatible with referenced pk type
+                ref_type = tmeta[ref_table]["pk"]
+                # Pick or add a column of that type
+                candidates = [c.name for c in t.columns if c.data_type.split('(')[0] == ref_type.split('(')[0] and c.name != 'id']
+                if candidates and self.rng.random() < 0.7:
+                    col = self.rng.choice(candidates)
+                else:
+                    # Add a new nullable column
+                    base = f"{ref_table}_id"
+                    new_name = base
+                    suffix = 2
+                    existing = {c.name for c in t.columns}
+                    while new_name in existing:
+                        new_name = f"{base}_{suffix}"
+                        suffix += 1
+                    t.columns.append(ColumnDefinition(new_name, ref_type, nullable=True))
+                    col = new_name
+                    # Also emit ALTER ADD COLUMN since CREATE TABLE already emitted
+                    out.append(f"ALTER TABLE {t.name} ADD COLUMN {col} {ref_type}")
+                cname = f"fk_{t.name}_{ref_table}_{self.rng.randint(1, 1_000_000)}"
+                action = self.rng.choice(["RESTRICT", "SET NULL", "CASCADE"])
+                out.append(
+                    f"ALTER TABLE {t.name} ADD CONSTRAINT {cname} FOREIGN KEY ({col}) REFERENCES {ref_table}(id) ON DELETE {action}"
+                )
+        return out
 
     def generate_alter_table_statements(self, table: TableDefinition, max_alters: int = 3) -> List[str]:
         """Generate safe ALTER TABLE statements for an existing table.
@@ -623,13 +788,7 @@ class DDLGenerator:
             while new_name in existing_cols:
                 new_name = f"{base}_{suffix}"
                 suffix += 1
-            data_types = [
-                "INTEGER", "BIGINT", "SMALLINT",
-                "VARCHAR(100)", "VARCHAR(200)", "TEXT",
-                "DECIMAL(10,2)", "NUMERIC(12,4)",
-                "BOOLEAN", "DATE", "TIMESTAMP"
-            ]
-            dtype = self.rng.choice(data_types)
+            dtype = self._random_data_type()
             default = self._generate_default(dtype) if self.rng.random() < 0.3 else None
             parts = [f"ALTER TABLE {table.name} ADD COLUMN {new_name} {dtype}"]
             # Keep columns nullable for safety

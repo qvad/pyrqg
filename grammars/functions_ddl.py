@@ -1,5 +1,3 @@
-import time
-import random
 #!/usr/bin/env python3
 """
 PostgreSQL Functions and Stored Procedures Grammar
@@ -16,19 +14,8 @@ import sys
 from pathlib import Path
 
 # Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from pyrqg.dsl.core import Grammar, ref, choice, template, Literal, number
-
-# Uniqueness helpers
-def random_suffix():
-    """Generate unique suffix"""
-    return f"_{int(time.time() * 1000) % 1000000}_{random.randint(1000, 9999)}"
-
-def random_id():
-    """Generate high-entropy ID"""
-    return random.randint(1, 10000000)
-
 
 # Initialize grammar
 g = Grammar("functions_ddl")
@@ -104,7 +91,7 @@ g.rule("return_type",
         template("TABLE({columns})", columns=ref("table_return_columns")),
         # Set returning functions
         template("SETOF {type}", type=ref("data_type")),
-        template("/* q_{random.randint(100000, 999999)} */ SETOF RECORD")
+        template("/* q_{query_id} */ SETOF RECORD", query_id=number(100000, 999999))
     )
 )
 
@@ -284,9 +271,9 @@ END;
 g.rule("plpgsql_declarations",
     choice(
         template("temp_var {type};", type=ref("data_type")),
-        template("/* q_{random.randint(100000, 999999)} */ counter INTEGER := 0;"),
-        template("/* q_{random.randint(100000, 999999)} */ result_text TEXT;"),
-        template("/* q_{random.randint(100000, 999999)} */ found_record RECORD;")
+        template("/* q_{query_id} */ counter INTEGER := 0;", query_id=number(100000, 999999)),
+        template("/* q_{query_id} */ result_text TEXT;", query_id=number(100000, 999999)),
+        template("/* q_{query_id} */ found_record RECORD;", query_id=number(100000, 999999))
     )
 )
 
@@ -296,8 +283,8 @@ g.rule("plpgsql_statements",
                 col=ref("column_name"),
                 table=ref("table_name"),
                 condition=ref("where_condition")),
-        template("/* q_{random.randint(100000, 999999)} */ counter := counter + 1;"),
-        template("/* q_{random.randint(100000, 999999)} */ PERFORM pg_sleep(0.1);"),
+        template("/* q_{query_id} */ counter := counter + 1;", query_id=number(100000, 999999)),
+        template("/* q_{query_id} */ PERFORM pg_sleep(0.1);", query_id=number(100000, 999999)),
         template("RAISE NOTICE 'Processing: %', {param};", param=ref("parameter_name"))
     )
 )

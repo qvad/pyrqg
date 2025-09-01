@@ -5,9 +5,29 @@ Includes INSERT ON CONFLICT, RETURNING, CTEs, and YugabyteDB-specific syntax
 
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import os
 from pyrqg.dsl.core import Grammar, choice, template, ref, number, maybe, repeat, Lambda, Literal
+from pyrqg.dsl.primitives import (
+    common_table_names,
+    common_column_names,
+    unique_columns,
+    string_value_common,
+    basic_value,
+    column_list_of,
+    value_list_of,
+    basic_where_condition,
+    id_join_condition,
+    returning_clause_basic,
+    alias_names,
+    index_name_default,
+)
+from pyrqg.dsl.schema_primitives import (
+    random_schema_element,
+    random_functions_element,
+    random_views_element,
+    schema_bundle_element,
+)
 
 # Create grammar instance
 g = Grammar("dml_yugabyte")
@@ -103,11 +123,8 @@ g.rule("delete_returning",
 
 g.rule("returning_clause",
     choice(
-        Literal("*"),
-        ref("column_name"),
-        template("{col1}, {col2}", col1=ref("column_name"), col2=ref("column_name")),
-        template("{col} AS {alias}", col=ref("column_name"), alias=ref("alias")),
-        template("yb_hash_code({col})", col=ref("column_name"))  # YugabyteDB specific
+        returning_clause_basic(ref("column_name")),
+        template("yb_hash_code({col})", col=ref("column_name")),  # YugabyteDB specific
     )
 )
 
@@ -220,13 +237,23 @@ g.rule("create_table_colocated",
     )
 )
 
-g.rule("create_index_hash",
-    template("CREATE INDEX {index_name} ON {table} USING HASH ({column})",
-        index_name=ref("index_name"),
-        table=ref("table_name"),
-        column=ref("column_name")
+if os.environ.get("PYRQG_YB"):
+    # Yugabyte-safe: default btree index
+    g.rule("create_index_hash",
+        template("CREATE INDEX {index_name} ON {table} ({column})",
+            index_name=ref("index_name"),
+            table=ref("table_name"),
+            column=ref("column_name")
+        )
     )
-)
+else:
+    g.rule("create_index_hash",
+        template("CREATE INDEX {index_name} ON {table} USING HASH ({column})",
+            index_name=ref("index_name"),
+            table=ref("table_name"),
+            column=ref("column_name")
+        )
+    )
 
 g.rule("split_table",
     template("ALTER TABLE {table} SPLIT AT VALUES ({split_values})",
@@ -240,16 +267,15 @@ g.rule("split_table",
 # ============================================================================
 
 g.rule("table_name",
-    choice("users", "orders", "products", "inventory", "transactions", "logs")
+    common_table_names()
 )
 
 g.rule("column_name",
-    choice("id", "user_id", "product_id", "name", "email", "status", 
-           "quantity", "price", "total", "created_at", "updated_at")
+    common_column_names()
 )
 
 g.rule("unique_column",
-    choice("id", "email", "product_id", "user_id")
+    unique_columns()
 )
 
 g.rule("constraint_name",
@@ -262,33 +288,22 @@ g.rule("constraint_name",
 )
 
 g.rule("column_list",
-    repeat(ref("column_name"), min=2, max=4, sep=", ")
+    column_list_of(ref("column_name"))
 )
 
 g.rule("value_list",
-    repeat(ref("value"), min=2, max=4, sep=", ")
+    value_list_of(ref("value"))
 )
 
 g.rule("value",
     choice(
-        number(1, 1000),
-        ref("string_value"),
-        Literal("NULL"),
-        Literal("DEFAULT"),
-        Literal("CURRENT_TIMESTAMP"),
-        template("yb_hash_code({num})", num=number(1, 100))  # YugabyteDB function
+        basic_value(),
+        template("yb_hash_code({num})", num=number(1, 100)),  # YugabyteDB function
     )
 )
 
 g.rule("string_value",
-    choice(
-        Literal("'active'"),
-        Literal("'inactive'"),
-        Literal("'pending'"),
-        Literal("'completed'"),
-        Lambda(lambda ctx: f"'user{ctx.rng.randint(1, 100)}@test.com'"),
-        Lambda(lambda ctx: f"'Product {ctx.rng.randint(1, 100)}'")
-    )
+    string_value_common()
 )
 
 g.rule("update_assignments",
@@ -312,17 +327,13 @@ g.rule("update_value",
 
 g.rule("where_condition",
     choice(
-        template("{field} = {value}", field=ref("column_name"), value=ref("value")),
-        template("{field} > {value}", field=ref("column_name"), value=number(1, 100)),
-        template("{field} IN ({values})", field=ref("column_name"), 
-                values=repeat(ref("value"), min=2, max=4, sep=", ")),
-        template("{field} IS NOT NULL", field=ref("column_name")),
-        template("yb_hash_code({field}) = {hash}", field=ref("column_name"), hash=number(1, 1000))
+        basic_where_condition(ref("column_name"), ref("value")),
+        template("yb_hash_code({field}) = {hash}", field=ref("column_name"), hash=number(1, 1000)),
     )
 )
 
 g.rule("join_condition",
-    template("target.{field} = source.{field}", field=ref("unique_column"))
+    id_join_condition(ref("unique_column"))
 )
 
 g.rule("select_query",
@@ -338,11 +349,11 @@ g.rule("cte_name",
 )
 
 g.rule("alias",
-    choice("new_id", "old_value", "result", "hash_code")
+    alias_names()
 )
 
 g.rule("index_name",
-    Lambda(lambda ctx: f"idx_{ctx.rng.choice(['users', 'orders', 'products'])}_{ctx.rng.randint(1, 100)}")
+    index_name_default()
 )
 
 g.rule("column_definitions",
@@ -357,11 +368,28 @@ g.rule("split_values",
     repeat(number(100, 1000), min=1, max=3, sep=", ")
 )
 
+# ============================================================================
+# Schema generation rules (DDL inside grammar)
+# ============================================================================
+
+g.rule("random_schema", random_schema_element(num_tables=5, dialect="postgresql"))
+g.rule("random_functions", random_functions_element(count=3, include_procedures=True))
+g.rule("random_views", random_views_element(count=2))
+g.rule("schema_bundle", schema_bundle_element(num_tables=5, functions=3, views=2, dialect="postgresql"))
+
 if __name__ == "__main__":
     # Test the grammar
     print("Testing YugabyteDB DML Grammar")
     print("="*60)
-    
+    # Example: generate only DDL bundle
+    print("\n-- Random schema bundle --")
+    print(schema_bundle_element(num_tables=3, functions=2, views=1).generate(g.context))
+
+    # Example: generate just tables/functions/views
+    print("\n-- Random tables --\n", random_schema_element(num_tables=2).generate(g.context))
+    print("\n-- Random functions --\n", random_functions_element(count=2).generate(g.context))
+    print("\n-- Random views --\n", random_views_element(count=1).generate(g.context))
+
     for i in range(15):
         try:
             query = g.generate("query", seed=i)

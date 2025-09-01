@@ -5,7 +5,6 @@ Uses dynamic values and more variety to ensure unique queries
 
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from pyrqg.dsl.core import Grammar, choice, template, ref, number, maybe, repeat, Lambda, Literal
 import hashlib

@@ -47,22 +47,25 @@ class TransactionState:
         
 state = TransactionState()
 
-g.rule("query",
-    Lambda(lambda ctx: (
-        # Increment transaction counter
-        (setattr(state, 'transactions', state.transactions + 1) or "") +
-        ctx.rng.choice(["", "START TRANSACTION"]) + " " +
-        # Reset savepoint counter
-        (setattr(state, 'savepoints', 0) or "") +
-        g.generate("savepoint", ctx.seed) + " " +
-        g.generate("body", ctx.seed) + " " +
-        g.generate("savepoint", ctx.seed) + " " +
-        # Increment savepoint counter  
-        (setattr(state, 'savepoints', state.savepoints + 1) or "") +
-        g.generate("rollback_to_savepoint", ctx.seed) + " " +
-        g.generate("commit_rollback", ctx.seed)
-    ).strip())
-)
+def _build_query(ctx):
+    stmts = []
+    if ctx.rng.choice([True, False]):
+        stmts.append("START TRANSACTION;")
+    state.savepoints = 0
+    if ctx.rng.random() < 0.2:
+        stmts.append("SAVEPOINT SP1;")
+    stmts.append(g.rules['body'].generate(ctx) + ";")
+    if ctx.rng.random() < 0.2:
+        stmts.append("SAVEPOINT SP1;")
+    if ctx.rng.random() < 0.3:
+        stmts.append(g.rules['body'].generate(ctx) + ";")
+    if ctx.rng.random() < 0.25:
+        stmts.append("ROLLBACK TO SAVEPOINT SP1;")
+    if ctx.rng.choice([True, False]):
+        stmts.append(ctx.rng.choice(["COMMIT;", "ROLLBACK;"]))
+    return "\n".join(stmts)
+
+g.rule("query", Lambda(_build_query))
 
 # ============================================================================
 # Transaction Control
@@ -72,25 +75,9 @@ g.rule("start_txn",
     choice("START TRANSACTION", "", weights=[1, 1])
 )
 
-g.rule("savepoint",
-    choice("", "", "", "", "SAVEPOINT SP1", weights=[4, 0, 0, 0, 1])
-)
-
-g.rule("rollback_to_savepoint", 
-    choice("", "", "", "ROLLBACK TO SAVEPOINT SP1", weights=[3, 0, 0, 1])
-)
-
-g.rule("commit_rollback",
-    choice(ref("commit"), ref("rollback"))
-)
-
-g.rule("commit",
-    choice("COMMIT", "", weights=[1, 1])
-)
-
-g.rule("rollback",
-    choice("ROLLBACK", "", weights=[1, 1])
-)
+g.rule("savepoint", choice("", "", "", "", "SAVEPOINT SP1;", weights=[4, 0, 0, 0, 1]))
+g.rule("rollback_to_savepoint", choice("", "", "", "ROLLBACK TO SAVEPOINT SP1;", weights=[3, 0, 0, 1]))
+g.rule("commit_rollback", choice("COMMIT;", "ROLLBACK;", "", weights=[1, 1, 1]))
 
 # ============================================================================
 # Body Operations

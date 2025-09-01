@@ -8,7 +8,6 @@ Notice how much cleaner and easier to understand this is!
 
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from pyrqg.dsl.core import (
     Grammar, choice, maybe, repeat, template, table, field, 
@@ -40,18 +39,24 @@ g.define_fields(
 # ============================================================================
 
 # Main query structure
-g.rule("query",
-    template(
-        "{txn_start}{sp1}{body1}{sp2}{body2}{rollback_sp}{txn_end}",
-        txn_start=maybe(ref("start_transaction"), 0.5),
-        sp1=maybe(ref("savepoint"), 0.2),
-        body1=ref("body"),
-        sp2=maybe(ref("savepoint"), 0.2),
-        body2=maybe(ref("body"), 0.3),
-        rollback_sp=maybe(ref("rollback_to_savepoint"), 0.25),
-        txn_end=maybe(ref("commit_rollback"), 0.5)
-    )
-)
+def _build_txn(ctx):
+    stmts = []
+    if ctx.rng.random() < 0.5:
+        stmts.append("START TRANSACTION;")
+    if ctx.rng.random() < 0.2:
+        stmts.append("SAVEPOINT SP1;")
+    stmts.append(g.rules['body'].generate(ctx) + ";")
+    if ctx.rng.random() < 0.2:
+        stmts.append("SAVEPOINT SP1;")
+    if ctx.rng.random() < 0.3:
+        stmts.append(g.rules['body'].generate(ctx) + ";")
+    if ctx.rng.random() < 0.25:
+        stmts.append("ROLLBACK TO SAVEPOINT SP1;")
+    if ctx.rng.random() < 0.5:
+        stmts.append(ctx.rng.choice(["COMMIT;", "ROLLBACK; "]))
+    return "\n".join(stmts)
+
+g.rule("query", Lambda(_build_txn))
 
 # Transaction control
 g.rule("start_transaction", "START TRANSACTION ; ")

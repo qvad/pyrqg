@@ -5,10 +5,12 @@ Tests the new MERGE command with various edge cases and conditions
 
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from pyrqg.dsl.core import Grammar, choice, template, ref, number, maybe, repeat
-import psycopg2
+try:
+    import psycopg2  # type: ignore
+except Exception:
+    psycopg2 = None
 import random
 
 # Connect to database and get real schema information
@@ -176,9 +178,7 @@ g.rule("merge_edge_cases",
 USING {table} AS t2
 ON t1.{id_column} = t2.{id_column} + 1
 WHEN MATCHED THEN
-    UPDATE SET {numeric_column} = t2.{numeric_column}
-WHEN NOT MATCHED BY SOURCE THEN
-    DELETE"""),
+    UPDATE SET {numeric_column} = t2.{numeric_column}"""),
         
         # MERGE with subquery in UPDATE
         template("""MERGE INTO {target_table} AS t

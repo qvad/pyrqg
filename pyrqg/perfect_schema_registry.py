@@ -2,7 +2,11 @@
 Perfect schema registry that tracks exactly which columns exist in each table.
 """
 
-import psycopg2
+import os
+try:
+    import psycopg2  # type: ignore
+except Exception:
+    psycopg2 = None
 from typing import Dict, List, Set, Optional
 import random
 
@@ -10,8 +14,12 @@ import random
 class PerfectSchemaRegistry:
     """Registry with perfect knowledge of database schema"""
     
-    def __init__(self, connection_string="dbname=postgres"):
-        self.conn = psycopg2.connect(connection_string)
+    def __init__(self, connection_string: str | None = None):
+        # Prefer DSN from environment if provided (set by runner when available)
+        dsn = connection_string or os.environ.get("PYRQG_DSN") or "dbname=postgres"
+        if psycopg2 is None:
+            raise ImportError("psycopg2 not installed. Install with: pip install psycopg2-binary")
+        self.conn = psycopg2.connect(dsn)
         self.tables = {}
         self.column_types = {}
         self.column_map = {}  # Maps column names to tables that have them
@@ -21,17 +29,24 @@ class PerfectSchemaRegistry:
         """Load complete schema information"""
         cur = self.conn.cursor()
         
-        # Set search path
-        cur.execute("SET search_path TO pyrqg, public")
+        # Set search path (schema configurable via env)
+        target_schema = os.environ.get("PYRQG_SCHEMA", "pyrqg")
+        cur.execute(f"SET search_path TO {target_schema}, public")
         
         # Get all tables and columns with their types
-        cur.execute("""
+        cur.execute(
+            """
             SELECT table_name, column_name, data_type
             FROM information_schema.columns
-            WHERE table_schema = 'pyrqg'
-            AND table_name NOT LIKE '%pkey%'
+            WHERE table_schema = %s
+              AND table_name NOT LIKE %s
             ORDER BY table_name, ordinal_position
-        """)
+            """,
+            (
+                os.environ.get("PYRQG_SCHEMA", "pyrqg"),
+                "%pkey%",
+            ),
+        )
         
         for table, column, data_type in cur.fetchall():
             if table not in self.tables:
@@ -49,13 +64,9 @@ class PerfectSchemaRegistry:
         cur.close()
     
     def get_tables(self) -> List[str]:
-        """Get list of all tables"""
-        workload_tables = [
-            'users', 'products', 'orders', 'inventory', 'transactions',
-            'sessions', 'customers', 'logs', 'analytics', 'accounts'
-        ]
-        # Return tables with schema prefix
-        return [f"pyrqg.{t}" for t in workload_tables if t in self.tables]
+        """Get list of all tables discovered in schema 'pyrqg'."""
+        schema = os.environ.get("PYRQG_SCHEMA", "pyrqg")
+        return [f"{schema}.{t}" for t in self.tables.keys()]
     
     def get_insertable_columns(self, table: str) -> List[str]:
         """Get columns suitable for INSERT (exclude id)"""

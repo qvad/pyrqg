@@ -11,6 +11,14 @@ from dataclasses import dataclass, field
 from pyrqg.dsl.core import Grammar
 from pyrqg.ddl_generator import DDLGenerator, TableDefinition
 
+__all__ = [
+    "TableMetadata",
+    "GeneratedQuery",
+    "QueryGenerator",
+    "RQG",
+    "create_rqg",
+]
+
 @dataclass
 class TableMetadata:
     """Metadata for a database table"""
@@ -320,22 +328,31 @@ class RQG:
     
     def _load_builtin_grammars(self):
         """Load built-in grammars packaged with PyRQG."""
+        
+        def _add_alias(alias: str, gobj):
+            if alias and alias not in self.grammars and gobj is not None:
+                self.grammars[alias] = gobj
+        
         # DML grammars
         try:
             from grammars.dml_unique import g as dml_unique
             self.grammars['dml_unique'] = dml_unique
+            # Path-style alias (same at top level)
+            _add_alias('dml_unique', dml_unique)
         except Exception:
             pass
         
         try:
             from grammars.dml_yugabyte import g as dml_yugabyte
             self.grammars['dml_yugabyte'] = dml_yugabyte
+            _add_alias('dml_yugabyte', dml_yugabyte)
         except Exception:
             pass
         
         try:
             from grammars.dml_fixed import g as dml_fixed
             self.grammars['dml_fixed'] = dml_fixed
+            _add_alias('dml_fixed', dml_fixed)
         except Exception:
             pass
         
@@ -343,18 +360,21 @@ class RQG:
         try:
             from grammars.yugabyte.transactions_postgres import g as txn_grammar
             self.grammars['yugabyte_transactions'] = txn_grammar
+            _add_alias('yugabyte/transactions_postgres', txn_grammar)
         except Exception:
             pass
         
         try:
             from grammars.yugabyte.optimizer_subquery_portable import g as subquery_grammar
             self.grammars['yugabyte_subquery'] = subquery_grammar
+            _add_alias('yugabyte/optimizer_subquery_portable', subquery_grammar)
         except Exception:
             pass
         
         try:
             from grammars.yugabyte.outer_join_portable import g as outer_join_grammar
             self.grammars['yugabyte_outer_join'] = outer_join_grammar
+            _add_alias('yugabyte/outer_join_portable', outer_join_grammar)
         except Exception:
             pass
         
@@ -380,8 +400,49 @@ class RQG:
             try:
                 module = __import__(module_path, fromlist=['g'])
                 self.grammars[name] = module.g
+                # Add a path-style alias derived from the module path
+                path_alias = module_path.replace('grammars.', '').replace('.', '/')
+                _add_alias(path_alias, module.g)
             except Exception:
                 pass
+
+        # Unified simple aliases for common categories
+        try:
+            from grammars.workload.select_focused import g as _selects
+            _add_alias('selects', _selects)
+        except Exception:
+            pass
+        try:
+            from grammars.workload.update_focused import g as _updates
+            _add_alias('updates', _updates)
+        except Exception:
+            pass
+        try:
+            from grammars.workload.insert_focused import g as _inserts
+            _add_alias('inserts', _inserts)
+        except Exception:
+            pass
+        try:
+            from grammars.functions_ddl import g as _functions
+            _add_alias('functions', _functions)
+        except Exception:
+            pass
+        try:
+            from grammars.dml_with_functions import g as _functions_in_dml
+            _add_alias('functions_in_dml', _functions_in_dml)
+        except Exception:
+            pass
+        # New top-level separated grammars by syntax
+        try:
+            from grammars.update import g as _update_only
+            _add_alias('update', _update_only)
+        except Exception:
+            pass
+        try:
+            from grammars.delete import g as _delete_only
+            _add_alias('delete', _delete_only)
+        except Exception:
+            pass
         
         # Alias for backward compatibility
         if 'dml_unique' in self.grammars:
@@ -591,14 +652,55 @@ class RQG:
                             count: int = 1, seed: Optional[int] = None) -> List[str]:
         """Generate queries from a grammar.
         
-        Raises a clear error listing available grammars when the requested
-        grammar isn't found.
+        New: Supports path-style identifiers based on file/module path without .py,
+        e.g., 'yugabyte/outer_join_portable' for grammars/yugabyte/outer_join_portable.py.
+        If the grammar name is not preloaded, we attempt to import it dynamically
+        from the 'grammars.' package using this mapping.
+        Falls back to loading from the repository's grammars/ folder relative to this file
+        when the import-based approach fails (useful in test environments where rootdir is tests/).
         """
         if grammar_name not in self.grammars:
-            available = ', '.join(sorted(self.grammars.keys()))
-            raise ValueError(
-                f"Grammar '{grammar_name}' not found. Available grammars: {available}"
-            )
+            # Attempt dynamic import using path-style identifier mapping
+            try:
+                module_path = ("grammars." + grammar_name.replace('/', '.')).rstrip('.')
+                module = __import__(module_path, fromlist=['g'])
+                if hasattr(module, 'g'):
+                    # Register under the provided identifier (path-style) for future use
+                    self.grammars[grammar_name] = getattr(module, 'g')
+                else:
+                    # If no 'g' exposed, fall back to error
+                    raise ImportError(f"Module '{module_path}' does not expose 'g'")
+            except Exception:
+                # Filesystem-based fallback: load from repo-root/grammars/<path>.py
+                try:
+                    import importlib.util
+                    from pathlib import Path
+                    base_dir = Path(__file__).parent.parent / "grammars"
+                    rel_path = Path(*grammar_name.replace('.', '/').split('/'))
+                    file_path = base_dir / (str(rel_path) + ".py")
+                    if not file_path.exists():
+                        # Also check for workload-style dotted names (e.g., workload.update_focused)
+                        rel_path_alt = Path(*grammar_name.split('.'))
+                        file_path_alt = base_dir / (str(rel_path_alt) + ".py")
+                        if file_path_alt.exists():
+                            file_path = file_path_alt
+                    if file_path.exists():
+                        spec = importlib.util.spec_from_file_location(f"grammar_{grammar_name.replace('/', '_').replace('.', '_')}", str(file_path))
+                        module = importlib.util.module_from_spec(spec)
+                        assert spec.loader is not None
+                        spec.loader.exec_module(module)
+                        if hasattr(module, 'g'):
+                            self.grammars[grammar_name] = getattr(module, 'g')
+                        else:
+                            raise ImportError(f"File '{file_path}' does not expose 'g'")
+                    else:
+                        raise FileNotFoundError(str(file_path))
+                except Exception:
+                    available = ', '.join(sorted(self.grammars.keys()))
+                    raise ValueError(
+                        f"Grammar '{grammar_name}' not found. Available grammars: {available}. "
+                        f"You can also specify a path-style identifier like 'yugabyte/outer_join_portable'."
+                    )
         
         grammar = self.grammars[grammar_name]
         queries = []
@@ -622,6 +724,105 @@ class RQG:
         if grammar is None:
             grammar = 'dml_unique' if 'dml_unique' in self.grammars else next(iter(self.grammars.keys()))
         return self.generate_from_grammar(grammar, rule=rule, count=count, seed=seed)
+
+    # ================================
+    # High-level integration API
+    # ================================
+    def generate_random_schema(self, num_tables: int = 5) -> List[str]:
+        """Generate a random schema (tables with constraints and indexes).
+        Uses the built-in DDLGenerator for rich schemas.
+        """
+        return self.generate_complex_ddl(num_tables=num_tables)
+
+    def generate_random_constraints_and_functions(self, constraints: int = 10,
+                                                  functions: int = 5,
+                                                  include_procedures: bool = True,
+                                                  seed: Optional[int] = None) -> List[str]:
+        """Generate random ALTER TABLE constraints and function/procedure DDL.
+        - constraints: number of ALTER/INDEX/DDL statements drawn from ddl_focused
+        - functions: number of function/procedure statements from functions_ddl
+        """
+        out: List[str] = []
+        base_seed = seed or random.randint(1, 1_000_000)
+        # Constraints and miscellanous DDL
+        if 'ddl_focused' in self.grammars:
+            # Mix alter/index/view by just using the generic 'query' rule for variety
+            out += self.generate_from_grammar('ddl_focused', rule='query', count=constraints, seed=base_seed)
+        # Functions/procedures
+        if 'functions_ddl' in self.grammars:
+            func_seed = base_seed + 10_000
+            # Alternate create_function and create_procedure when requested
+            for i in range(functions):
+                rule = 'create_procedure' if include_procedures and (i % 3 == 2) else 'create_function'
+                out += self.generate_from_grammar('functions_ddl', rule=rule, count=1, seed=func_seed + i)
+        return out
+
+    def generate_random_data_inserts(self, rows_per_table: int = 10, seed: Optional[int] = None,
+                                     multi_row: bool = False, on_conflict: bool = False,
+                                     returning: bool = False) -> List[str]:
+        """Generate INSERT statements for current tables using QueryGenerator.
+        If no tables registered, default demo tables will be used.
+        """
+        gen = self.create_generator(seed=seed)
+        inserts: List[str] = []
+        table_names = list(self.tables.keys()) or []
+        if not table_names:
+            return []
+        # Distribute rows per table
+        for t in table_names:
+            for _ in range(rows_per_table):
+                q = gen.insert(table=t, multi_row=multi_row, on_conflict=on_conflict, returning=returning)
+                inserts.append(q.sql)
+        return inserts
+
+    def run_mixed_workload(self, count: int = 100, seed: Optional[int] = None,
+                           include_functions: bool = True,
+                           include_selects: bool = True,
+                           include_inserts: bool = True,
+                           include_updates: bool = True,
+                           include_deletes: bool = True) -> List[str]:
+        """Generate a mixed workload of SELECT/INSERT/UPDATE/DELETE queries.
+        - If include_functions is True, mixes in queries from dml_with_functions.
+        - Otherwise, uses workload-focused grammars and QueryGenerator for diversity.
+        """
+        out: List[str] = []
+        rng = random.Random(seed)
+        base_seed = seed or rng.randint(1, 1_000_000)
+
+        # Prefer grammar-driven generation for richer SQL
+        sources: List[str] = []
+        if include_functions and 'dml_with_functions' in self.grammars:
+            sources.append('dml_with_functions')
+        if include_selects and 'workload_select' in self.grammars:
+            sources.append('workload_select')
+        if include_inserts and 'workload_insert' in self.grammars:
+            sources.append('workload_insert')
+        if include_updates and 'workload_update' in self.grammars:
+            sources.append('workload_update')
+        if include_deletes and 'workload_delete' in self.grammars:
+            sources.append('workload_delete')
+
+        # Fallback: if no grammars, use simple QueryGenerator
+        use_qg_fallback = len(sources) == 0
+        qg = self.create_generator(seed=base_seed) if use_qg_fallback else None
+
+        for i in range(count):
+            if use_qg_fallback:
+                choice = rng.choice(['select', 'insert', 'update', 'delete'])
+                if choice == 'select' and include_selects:
+                    out.append(qg.select().sql)
+                elif choice == 'insert' and include_inserts:
+                    out.append(qg.insert().sql)
+                elif choice == 'update' and include_updates:
+                    out.append(qg.update().sql)
+                elif choice == 'delete' and include_deletes:
+                    out.append(qg.delete().sql)
+                else:
+                    out.append(qg.select().sql)
+            else:
+                gname = rng.choice(sources)
+                out += self.generate_from_grammar(gname, rule='query', count=1, seed=base_seed + i)
+        return out
 
 # Convenience function
 def create_rqg() -> RQG:

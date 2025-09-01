@@ -4,7 +4,7 @@ Query Executor - Handles database connections and query execution
 
 import time
 import logging
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List
 from urllib.parse import urlparse
 
 from .result import Result, Status
@@ -350,19 +350,7 @@ class SQLiteExecutor(Executor):
             if cursor:
                 cursor.close()
     
-    def _modify_query_for_sqlite(self, query: str) -> str:
-        """Modify query to work with SQLite"""
-        # Replace PostgreSQL specific syntax
-        query = query.replace('::INTEGER', '')
-        query = query.replace('DEFAULT', 'NULL')  # For auto-increment
-        
-        # SQLite doesn't support SAVEPOINT in the same way
-        if 'SAVEPOINT' in query:
-            return query.replace('SAVEPOINT', '-- SAVEPOINT')
-        if 'ROLLBACK TO' in query:
-            return query.replace('ROLLBACK TO', '-- ROLLBACK TO')
-        
-        return query
+    # SQLite/MySQL support removed in simplified build
 
 
 class DryRunExecutor(Executor):
@@ -417,15 +405,10 @@ def create_executor(dsn: Optional[str] = None) -> Executor:
     parsed = urlparse(dsn)
     db_type = parsed.scheme.lower()
     
-    executor = None
     if db_type in ['postgresql', 'postgres']:
         executor = PostgreSQLExecutor(dsn)
-    elif db_type in ['mysql']:
-        executor = MySQLExecutor(dsn)
-    elif db_type in ['sqlite', 'sqlite3']:
-        executor = SQLiteExecutor(dsn)
     else:
-        raise ValueError(f"Unsupported database type: {db_type}")
+        raise ValueError(f"Unsupported database type: {db_type}. Only PostgreSQL is supported in this build.")
     
     # Connect to the database
     executor.connect()

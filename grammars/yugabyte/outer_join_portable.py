@@ -69,9 +69,10 @@ g.rule("query",
 )
 
 g.rule("select",
-    template("SELECT {select_list} FROM {join_list}",
+    template("SELECT {select_list} FROM {base_from} {join_chain}",
         select_list=ref("select_list"),
-        join_list=ref("join_list_n")
+        base_from=ref("base_from"),
+        join_chain=ref("join_missing_table_items")
     )
 )
 
@@ -88,7 +89,7 @@ g.rule("select_list",
 
 g.rule("loose_index_hints",
     choice(
-        template("MIN( {table_alias}.`col_int_key` ) AS {alias}, MAX( {table_alias}.`col_int_key` ) AS {alias}",
+        template("MIN( {table_alias}.col_int_key ) AS {alias}, MAX( {table_alias}.col_int_key ) AS {alias}",
             table_alias=ref("current_table_alias"),
             alias=ref("field_alias")
         ),
@@ -119,10 +120,11 @@ g.rule("select_field",
 # JOIN List - The Core Logic
 # ============================================================================
 
-g.rule("join_list_n",
-    template("{join} {join_more}",
-        join=ref("join"),
-        join_more=ref("join_missing_table_items")
+# Base FROM table (emitted once)
+#gives the initial table in FROM clause as table0
+g.rule("base_from",
+    template("{table} AS table0",
+        table=ref("table_name")
     )
 )
 
@@ -146,9 +148,7 @@ g.rule("join",
 )
 
 g.rule("join_inner",
-    template("{existing_table} AS {alias1} INNER JOIN {new_table} AS {alias2} ON {condition}",
-        existing_table=ref("existing_table_item"),
-        alias1=ref("existing_table_alias"),
+    template("INNER JOIN {new_table} AS {alias2} ON {condition}",
         new_table=ref("new_table_item"),
         alias2=ref("new_table_alias"),
         condition=ref("join_condition")
@@ -156,9 +156,7 @@ g.rule("join_inner",
 )
 
 g.rule("join_left", 
-    template("{existing_table} AS {alias1} LEFT OUTER JOIN {new_table} AS {alias2} ON {condition}",
-        existing_table=ref("existing_table_item"),
-        alias1=ref("existing_table_alias"),
+    template("LEFT OUTER JOIN {new_table} AS {alias2} ON {condition}",
         new_table=ref("new_table_item"),
         alias2=ref("new_table_alias"),
         condition=ref("join_condition")
@@ -166,9 +164,7 @@ g.rule("join_left",
 )
 
 g.rule("join_right",
-    template("{existing_table} AS {alias1} RIGHT OUTER JOIN {new_table} AS {alias2} ON {condition}",
-        existing_table=ref("existing_table_item"),
-        alias1=ref("existing_table_alias"),
+    template("RIGHT OUTER JOIN {new_table} AS {alias2} ON {condition}",
         new_table=ref("new_table_item"),
         alias2=ref("new_table_alias"),
         condition=ref("join_condition")
@@ -300,10 +296,11 @@ g.rule("value",
 
 # GROUP BY support
 g.rule("select_with_group_by",
-    template("SELECT {group_fields}, {aggregates} FROM {join_list} GROUP BY {group_fields} {having}",
+    template("SELECT {group_fields}, {aggregates} FROM {base_from} {join_chain} GROUP BY {group_fields} {having}",
         group_fields=ref("group_by_fields"),
         aggregates=ref("aggregate_list"),
-        join_list=ref("join_list_n"),
+        base_from=ref("base_from"),
+        join_chain=ref("join_missing_table_items"),
         having=maybe(ref("having_clause"))
     )
 )

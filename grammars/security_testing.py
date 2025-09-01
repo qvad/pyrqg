@@ -5,10 +5,12 @@ Tests GRANT, REVOKE, ROLE management, RLS (Row Level Security), and security edg
 
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from pyrqg.dsl.core import Grammar, choice, template, ref, maybe, repeat
-import psycopg2
+try:
+    import psycopg2  # type: ignore
+except Exception:
+    psycopg2 = None
 
 # Get real database objects
 def get_database_objects():
@@ -39,9 +41,11 @@ def get_database_objects():
             """, (table,))
             table_columns[table] = [row[0] for row in cur.fetchall()]
         
-        # Get current user and available roles
-        cur.execute("SELECT current_user")
-        current_user = cur.fetchone()[0]
+        # Get current user and database
+        cur.execute("SELECT current_user, current_database()")
+        row = cur.fetchone()
+        current_user = row[0]
+        current_db = row[1]
         
         # Get schemas
         cur.execute("""
@@ -55,17 +59,18 @@ def get_database_objects():
         cur.close()
         conn.close()
         
-        return tables, table_columns, current_user, schemas
+        return tables, table_columns, current_user, current_db, schemas
     except:
         # Fallback values
         return (
             ["users", "products", "orders"],
             {"users": ["id", "name", "email"], "products": ["id", "name", "price"]},
             "postgres",
+            "postgres",
             ["public"]
         )
 
-tables, table_columns, current_user, schemas = get_database_objects()
+tables, table_columns, current_user, current_db, schemas = get_database_objects()
 
 # Ensure we have some values
 if not tables:
@@ -211,7 +216,7 @@ WHERE {view_condition}"""),
 g.rule("table", choice(*tables))
 g.rule("schema", choice(*schemas))
 g.rule("column", choice(*all_columns))
-g.rule("current_database", "current_database()")
+g.rule("current_database", current_db)
 g.rule("current_user", current_user)
 
 # Grantees - use safe values
@@ -221,7 +226,7 @@ g.rule("grantee", choice("PUBLIC", "CURRENT_USER", current_user))
 g.rule("table_privilege", choice("SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER", "ALL PRIVILEGES"))
 g.rule("column_privilege", choice("SELECT", "INSERT", "UPDATE", "REFERENCES"))
 g.rule("schema_privilege", choice("USAGE", "CREATE", "ALL PRIVILEGES"))
-g.rule("database_privilege", choice("CONNECT", "CREATE", "TEMPORARY", "TEMP"))
+g.rule("database_privilege", choice("CONNECT", "CREATE"))
 g.rule("sequence_privilege", choice("USAGE", "SELECT", "UPDATE", "ALL PRIVILEGES"))
 
 # Policy related

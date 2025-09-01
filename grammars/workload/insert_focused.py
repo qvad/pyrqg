@@ -76,8 +76,10 @@ def generate_insert(ctx, multi_row=False):
     if not all_columns:
         return f"INSERT INTO {table} DEFAULT VALUES"
     
-    # Pick 3-6 random columns
-    num_columns = ctx.rng.randint(3, min(6, len(all_columns)))
+    # Pick 1-6 random columns (allow small tables)
+    upper = min(6, len(all_columns))
+    lower = 1 if upper < 3 else 3
+    num_columns = ctx.rng.randint(lower, upper)
     columns = ctx.rng.sample(all_columns, num_columns)
     
     # Generate values for each column
@@ -110,8 +112,10 @@ def generate_insert_select(ctx):
     if not target_columns:
         return f"INSERT INTO {target_table} DEFAULT VALUES"
     
-    # Pick 3-5 columns
-    num_columns = ctx.rng.randint(3, min(5, len(target_columns)))
+    # Pick 1-5 columns (allow small tables)
+    upper = min(5, len(target_columns))
+    lower = 1 if upper < 3 else 3
+    num_columns = ctx.rng.randint(lower, upper)
     columns = ctx.rng.sample(target_columns, num_columns)
     
     # Generate SELECT columns - only use columns that exist in source table
@@ -158,8 +162,10 @@ def generate_insert_with_defaults(ctx):
     if not all_columns:
         return f"INSERT INTO {table} DEFAULT VALUES"
     
-    # Pick 2-4 columns (fewer to show DEFAULT usage)
-    num_columns = ctx.rng.randint(2, min(4, len(all_columns)))
+    # Pick 1-4 columns (allow small tables)
+    upper = min(4, len(all_columns))
+    lower = 1 if upper < 2 else 2
+    num_columns = ctx.rng.randint(lower, upper)
     columns = ctx.rng.sample(all_columns, num_columns)
     
     # Mix real values and DEFAULT

@@ -7,7 +7,6 @@ Tests query planner limits, memory pressure, statistics edge cases, and performa
 
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from pyrqg.dsl.core import Grammar, choice, template, ref, number, maybe
 
@@ -20,7 +19,10 @@ def random_id():
     """Generate high-entropy ID"""
     return random.randint(1, 10000000)
 
-import psycopg2
+try:
+    import psycopg2  # type: ignore
+except Exception:
+    psycopg2 = None
 
 # Get database schema optimized for performance testing
 def get_performance_schema():

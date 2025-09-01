@@ -4,7 +4,6 @@ This module provides a minimal, compatible wrapper over PostgreSQLExecutor.
 """
 
 import time
-from typing import Optional, Dict, Any
 
 from .executor import PostgreSQLExecutor
 from .result import Result, Status
