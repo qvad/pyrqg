@@ -5,7 +5,6 @@ Tests constraints, triggers, foreign keys, check constraints, and data validatio
 
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from pyrqg.dsl.core import Grammar, choice, template, ref, number, maybe, repeat
 import psycopg2
@@ -315,11 +314,10 @@ ON CONFLICT ({pk_column})
 DO UPDATE SET {numeric_column} = EXCLUDED.{numeric_column}"""),
         
         # Deadlock prone pattern
-        template("""-- Potential deadlock pattern
+        template("""-- Potential contention pattern (PostgreSQL-compatible)
 UPDATE {table}
 SET {numeric_column} = {numeric_column} + 1
-WHERE {pk_column} IN (1, 2)
-ORDER BY {pk_column} DESC""")
+WHERE {pk_column} IN (1, 2)""")
     )
 )
 

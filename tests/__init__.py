@@ -1,1 +1,0 @@
-# PyRQG Test Suite

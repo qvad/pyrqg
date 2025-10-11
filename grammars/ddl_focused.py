@@ -141,15 +141,12 @@ g.rule("index_columns", Choice(
     Template("{column_name}, {column_name2:column_name}, {column_name3:column_name}")
 ))
 
+from pyrqg.dsl.core import ref
 g.rule("index_options", Choice(
-    "",
-    "WHERE status = 'active'",
-    "WHERE {column_name} IS NOT NULL",
-    "WHERE created_at > CURRENT_DATE - INTERVAL '30 days'",
-    "INCLUDE ({column_name})",
-    "USING btree",
-    "USING hash",
-    "USING gin"
+    "",  # default btree
+    Template("WHERE status = 'active'"),
+    Template("WHERE {col} IS NOT NULL", col=ref('column_name')),
+    Template("WHERE created_at > CURRENT_DATE - INTERVAL '30 days'")
 ))
 
 # DROP TABLE
