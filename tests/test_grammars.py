@@ -67,7 +67,7 @@ class TestGrammarLoading:
         grammar = load_grammar(grammar_name)
         # Most grammars should have a 'query' rule as entry point
         # Some specialized ones might not
-        if grammar_name not in ["functions_ddl", "postgresql15_types"]:
+        if grammar_name not in ["ddl_aux", "postgresql15_types"]:
             assert "query" in grammar.rules, f"Grammar {grammar_name} missing 'query' rule"
 
 
@@ -192,9 +192,9 @@ class TestSQLValidity:
 class TestSpecificGrammars:
     """Test specific grammar features"""
     
-    def test_functions_ddl_grammar(self):
+    def test_ddl_aux_grammar(self):
         """Test PostgreSQL functions DDL grammar"""
-        grammar = load_grammar("functions_ddl")
+        grammar = load_grammar("ddl_aux")
         
         # Test function creation
         query = grammar.generate("create_function", seed=42)

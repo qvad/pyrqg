@@ -366,13 +366,13 @@ class RQG:
             ('workload_upsert', 'grammars.workload.upsert_focused'),
             ('workload_select', 'grammars.workload.select_focused'),
             ('ddl_focused', 'grammars.ddl_focused'),
-            ('functions_ddl', 'grammars.functions_ddl'),
+            ('ddl_aux', 'grammars.ddl_aux'),
             ('dml_with_functions', 'grammars.dml_with_functions'),
             # New comprehensive test grammars
             ('merge_statement', 'grammars.merge_statement'),
             ('security_testing', 'grammars.security_testing'),
             ('data_integrity_testing', 'grammars.data_integrity_testing'),
-            ('concurrent_isolation_testing', 'grammars.concurrent_isolation_testing'),
+            ('txn_concurrency', 'grammars.txn_concurrency'),
             ('performance_edge_cases', 'grammars.performance_edge_cases')
         ]
         
@@ -554,14 +554,14 @@ class RQG:
             'workload_upsert': 'UPSERT/INSERT ON CONFLICT patterns',
             'workload_select': 'SELECT-focused queries with joins, subqueries',
             'ddl_focused': 'DDL-focused with complex constraints, indexes, views',
-            'functions_ddl': 'Functions and procedures DDL operations',
+            'ddl_aux': 'Functions and procedures DDL operations',
             'dml_with_functions': 'DML queries using SQL functions',
             
             # Comprehensive test grammars
             'merge_statement': 'PostgreSQL 15+ MERGE statement testing',
             'security_testing': 'Security features: GRANT/REVOKE, roles, RLS',
             'data_integrity_testing': 'Constraint violations and data integrity edge cases',
-            'concurrent_isolation_testing': 'Transaction isolation and concurrency testing',
+            'txn_concurrency': 'Transaction isolation and concurrency testing',
             'performance_edge_cases': 'Query planner and performance boundary testing',
             
             # Aliases

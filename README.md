@@ -47,15 +47,10 @@ python -m pyrqg.runner ddl --table demo --num-columns 8 --num-constraints 4 --se
 # Generate 100 queries from a built-in grammar
 python -m pyrqg.runner grammar --grammar dml_yugabyte --count 100 --seed 123 --output queries.sql
 
-# Delegate to the production runner (predefined configs retained)
-python -m pyrqg.runner production --config yugabyte --count 100000
-
-# Run a production scenario workload (grammar file)
-python -m pyrqg.runner scenario --file production_scenarios\workloads\01_ecommerce_workload.py --count 1000
-
-# Execute end-to-end against local PostgreSQL (creates random tables, applies ALTERs, runs queries)
-python -m pyrqg.runner exec --dsn "postgresql://postgres:password@localhost:5432/postgres" --num-tables 20 --count 100000 --use-filter --progress-every 1000
-# Add --echo-queries to print every executed statement
+# Execute generated queries by applying them with psql
+# Example: generate to file and apply to a running database
+python -m pyrqg.runner grammar --grammar dml_unique --count 100 --output queries.sql
+psql "postgresql://postgres:password@localhost:5432/postgres" -f queries.sql
 ```
 
 ### Local Database (PostgreSQL) - Quick Launch
@@ -143,23 +138,12 @@ Quick check:
 psql "postgresql://postgres:password@localhost:5433/postgres" -c "SELECT version();"
 ```
 
-Run PyRQG against YugabyteDB and print sample SQL errors:
+Run PyRQG against YugabyteDB and apply queries with psql:
 
 ```bash
-# Generate DDL + DML and execute, showing up to 10 syntax errors
-python -m pyrqg.runner exec \
-  --dsn "postgresql://postgres:password@localhost:5433/postgres" \
-  --num-tables 10 \
-  --count 200 \
-  --print-errors --error-samples 10
-```
-
-Alternatively, use the provided config:
-
-```bash
-python -m pyrqg.runner grammar --grammar dml_yugabyte --count 50
-# Or run production settings oriented for Yugabyte (see docs)
-python -m pyrqg.runner production --config yugabyte --count 1000
+# Generate queries to a file, then apply with psql (YugabyteDB listens on 5433)
+python -m pyrqg.runner grammar --grammar dml_yugabyte --count 50 --output queries.sql
+psql "postgresql://postgres:password@localhost:5433/postgres" -f queries.sql
 ```
 
 Notes:
@@ -185,6 +169,72 @@ rqg_pg = create_rqg()
 queries = rqg_pg.generate_from_grammar('dml_unique', count=10)
 ```
 
+### Quick start: Runner CLI examples
+
+Below are copy-pasteable examples to start the built-in runner. Replace credentials/DSN as needed.
+
+List available grammars and descriptions:
+
+```bash
+python -m pyrqg.runner list
+```
+
+Generate queries from a specific grammar and print to console:
+
+```bash
+python -m pyrqg.runner grammar --grammar dml_unique --count 5
+```
+
+Generate queries and save to a file (no execution):
+
+```bash
+python -m pyrqg.runner grammar --grammar dml_unique --count 50 --output queries.sql
+```
+
+Execute generated queries against a local Postgres/Yugabyte instance:
+
+Windows PowerShell (set DSN for the current session)
+
+```powershell
+$env:PYRQG_DSN = "postgresql://postgres:postgres@localhost:5432/postgres"
+python -m pyrqg.runner grammar --grammar dml_unique --count 20 --echo-queries --execute
+```
+
+Or pass DSN inline (any shell):
+
+```bash
+python -m pyrqg.runner grammar --grammar dml_unique --count 20 \
+  --dsn "postgresql://postgres:postgres@localhost:5432/postgres" \
+  --echo-queries --continue-on-error --print-errors
+```
+
+Run all grammars once each (initialize a basic default schema first):
+
+```bash
+python -m pyrqg.runner all --count 3 --init-schema \
+  --dsn "postgresql://postgres:postgres@localhost:5432/postgres" \
+  --echo-queries --continue-on-error --print-errors
+```
+
+Generate complex DDL for N random tables and save to a file:
+
+```bash
+python -m pyrqg.runner ddl --num-tables 5 --output schema.sql
+```
+
+Generate a single random table DDL (with indexes) and execute it:
+
+```bash
+python -m pyrqg.runner ddl --table tmp_users --num-columns 8 --num-constraints 3 \
+  --dsn "postgresql://postgres:postgres@localhost:5432/postgres" --execute --echo-queries
+```
+
+Deterministic generation with a seed (same seed → same queries):
+
+```bash
+python -m pyrqg.runner grammar --grammar dml_unique --count 5 --seed 42
+```
+
 ### Schema-Aware Generation (NEW)
 
 ```python
@@ -199,12 +249,110 @@ query = generator.generate_update("products") # Type-aware values
 query = generator.generate_select("orders")   # Valid joins
 ```
 
+## How PyRQG Works
+
+PyRQG generates SQL by walking a user-defined grammar (a small Python program that describes how to build statements). At a high level:
+- You define a Grammar object with named rules (e.g., query, table, column, value) using DSL primitives like template, choice, repeat, maybe, and ref.
+- The engine starts from a main rule (by default rule="query") and expands placeholders recursively.
+- A seeded random source drives choices to create diverse yet reproducible queries.
+- Optionally you can generate DDL using the DDL generator to set up a test schema.
+- You can run generation through the CLI Runner or the Python API; output can be printed, written to a file, or executed via psql.
+
+Key DSL primitives you’ll use most often:
+- template("... $placeholder ..."): string pattern with named placeholders
+- choice(a, b, c): randomly choose one option
+- repeat("rule", min=0, max=3, separator=", "): repeat another rule
+- maybe("rule"): include another rule with 50/50 probability
+- ref("name"): reference another rule explicitly (when not using string shorthands)
+
+Determinism and seeds:
+- Pass --seed N in the runner or seed=N in the API to get repeatable sequences.
+- Same grammar + same seed => exactly the same output.
+
+## Create Your Own Grammar (Step-by-Step)
+
+Below is the smallest possible, but useful, custom grammar that emits simple SELECT/INSERT statements.
+
+1) Create a new file, for example grammars/my_grammar.py:
+
+```python
+from pyrqg.dsl.core import Grammar, template, choice, repeat
+
+# Expose a top-level variable named `g` so loaders can discover it
+
+g = Grammar(
+    # Entry point; the runner/API will use rule="query" by default
+    query=choice(
+        template("SELECT $cols FROM $table$maybe_where"),
+        template("INSERT INTO $table ($cols) VALUES ($vals)")
+    ),
+
+    # Sub-rules
+    cols=repeat("col", min=1, max=4, separator=", "),
+    col=choice("id", "name", "email", "created_at"),
+    table=choice("users", "products", "orders"),
+
+    # Optional WHERE clause
+    maybe_where=choice("", " WHERE id = 1", " WHERE name = 'x'") ,
+
+    # Values for INSERT
+    vals=repeat("val", min=1, max=4, separator=", "),
+    val=choice("1", "'abc'", "NULL")
+)
+```
+
+2) Load your grammar in one of two ways:
+- Easiest (environment-based): set PYRQG_GRAMMARS to the module path that defines g. Example on Windows PowerShell:
+  - $env:PYRQG_GRAMMARS = "grammars.my_grammar"
+  - python -m pyrqg.runner list  # you should see my_grammar in the list
+- Programmatic: load and register directly in Python:
+  - from grammars.my_grammar import g
+  - from pyrqg.api import create_rqg
+  - rqg = create_rqg(); rqg.add_grammar("my_grammar", g)
+
+3) Run it via the Runner:
+- python -m pyrqg.runner grammar --grammar my_grammar --count 10 --seed 7
+- To write to a file: add --output queries.sql and apply with psql.
+
+4) Use it via the API:
+```python
+from pyrqg.api import create_rqg
+from grammars.my_grammar import g
+
+rqg = create_rqg()
+rqg.add_grammar("my_grammar", g)
+print("\n".join(rqg.generate_from_grammar("my_grammar", count=5, seed=123)))
+```
+
+Tips:
+- Always expose the variable name g = Grammar(...) in your module so loaders can find it.
+- Give your rules meaningful names. The default entry rule is query but you can pass a different one via --rule in API usage.
+- Start simple; grow complexity with new rules and references as you need more diversity.
+
+## End-to-End Examples
+
+- Generate 50 statements from your grammar and apply to local Postgres with psql:
+  - python -m pyrqg.runner grammar --grammar my_grammar --count 50 --output queries.sql
+  - psql "postgresql://postgres:password@localhost:5432/postgres" -f queries.sql
+- Generate DDL for a quick playground schema:
+  - python -m pyrqg.runner ddl --num-tables 3 --output schema.sql
+  - psql "postgresql://postgres:password@localhost:5432/postgres" -f schema.sql
+- Deterministic run (same seed → same output):
+  - python -m pyrqg.runner grammar --grammar my_grammar --count 10 --seed 42
+
+## Troubleshooting
+
+- Runner says: "--grammar is required for 'grammar' mode" → supply --grammar NAME or use the list mode to discover names.
+- Your grammar doesn’t appear in list → ensure PYRQG_GRAMMARS includes your module path and that the module exposes g.
+- psql not found on Windows → install PostgreSQL client or run psql inside the Docker container via docker exec.
+- Connection refused → verify DSN host/port and that your database container is running.
+
 ## Available Grammars
 
 ### Core Grammars
 - `dml_unique` - DML with maximum uniqueness
 - `ddl_focused` - Complex DDL generation
-- `functions_ddl` - PostgreSQL functions and stored procedures
+- `ddl_aux` - PostgreSQL functions and stored procedures
 - `advanced_query_patterns` - Complex query patterns
 - `postgresql15_types` - PostgreSQL 15 data types
 - `json_sql_pg15` - PostgreSQL 15 JSON/SQL features
@@ -221,32 +369,11 @@ query = generator.generate_select("orders")   # Valid joins
 - `yugabyte/optimizer_subquery_portable` - Optimizer testing
 - `yugabyte/outer_join_portable` - Complex join patterns
 
-## Production Usage
+## Performance
 
-### Billion-Scale Generation
-
-```bash
-# Use predefined configuration (e.g., yugabyte, test, performance, minimal, billion)
-python -m pyrqg.runner production --config yugabyte
-
-# Custom configuration
-python -m pyrqg.runner production --custom --queries 1000000000 --grammars dml_unique,functions_ddl --threads 16
-
-# Override target count and threads on predefined config
-python -m pyrqg.runner production --config yugabyte --count 1000000 --threads 8
-
-# Resume from checkpoint
-python -m pyrqg.runner production --config yugabyte --checkpoint checkpoint.json
-
-# Production scenario (DDL + mixed workload for scenario + general workload)
-python -m pyrqg.runner production --production-scenario bank --count 1000 --seed 42 --output prod_bank.sql
-
-# Directly execute the scenario against a running DB (no intermediate file)
-python -m pyrqg.runner production --production-scenario bank --count 1000 --seed 42  --dsn "postgresql://yugabyte:yugabyte@localhost:5433/postgres" --use-filter --print-errors --error-samples 10 --progress-every 100 --echo-queries
-
-# Or generate to file and apply with psql
-psql "postgresql://yugabyte:yugabyte@localhost:5433/postgres" -f prod_bank.sql
-```
+On a modern 16-core machine:
+- Query generation: 100,000+ queries/second
+- Schema-aware: thousands of queries/second with high success rate
 
 ### Performance Benchmarks
 
@@ -259,24 +386,6 @@ On a modern 16-core machine:
 
 ## Advanced Features
 
-### PostgreSQL Compatibility
-
-PyRQG includes advanced PostgreSQL compatibility features:
-
-```python
-# Enable PostgreSQL filtering
-from pyrqg.filters.postgres_filter import PostgreSQLFilter
-
-pg_filter = PostgreSQLFilter()
-valid_query = pg_filter.filter_query(query)  # Returns validated query or None
-
-# Analyze query patterns
-from pyrqg.filters.query_analyzer import QueryAnalyzer
-
-analyzer = QueryAnalyzer()
-stats = analyzer.analyze_queries(queries)
-print(stats.error_distribution)
-```
 
 ### Custom Grammar Definition
 
@@ -310,50 +419,27 @@ PyRQG uses a modular architecture optimized for performance:
 3. **Production System**: Multi-threaded generation with batching
 4. **Entropy Manager**: Thread-safe 256-bit randomization
 5. **Uniqueness Tracker**: Bloom filter with <0.001% false positives
-6. **PostgreSQL Filter**: Query validation and fixing
-7. **Schema Awareness**: Real-time database introspection
+6. **Schema Awareness**: Real-time database introspection
 
 ## Testing
 
 ```bash
 # Run all tests
-./run_tests.sh
+pytest
 
-# Run specific test suites
-python -m pytest tests/test_dsl_core.py -v
-python -m pytest tests/test_production.py -v
-python -m pytest tests/test_grammars.py -v
+# Run specific test files
+pytest tests/test_dsl_core.py -v
+pytest tests/test_api.py -v
 
 # Run with coverage
-python -m pytest --cov=pyrqg --cov-report=html
+pytest --cov=pyrqg --cov-report=html
 ```
 
 ## Documentation
 
-- [Architecture Overview](docs/ARCHITECTURE.md)
-- [Grammar Development Guide](docs/GRAMMAR_GUIDE.md)
-- [Production Configuration](docs/PRODUCTION_CONFIG.md)
-- [PostgreSQL Compatibility](docs/POSTGRES_COMPAT.md)
+- PyRQG Complete Specification: PYRQG_COMPLETE_SPECIFICATION.md
+- Test Suite Guide: tests/README.md
 
-## Cleanup
-
-To clean up non-essential artifacts (logs, generated reports, temp outputs, etc.) based on the curated list in CLEANUP_DELETE_LIST.txt:
-
-```bash
-# Dry-run (recommended): shows what would be deleted
-python scripts/cleanup_from_list.py --dry-run
-
-# Execute cleanup
-python scripts/cleanup_from_list.py --execute
-
-# Verbose output
-python scripts/cleanup_from_list.py --execute --verbose
-```
-
-Notes:
-- The script reads only the "Deletion candidates" section and ignores [KEEP] entries.
-- docs/ is always protected and will not be deleted by the script.
-- Review and adjust CLEANUP_DELETE_LIST.txt before running with --execute.
 
 ## License
 
