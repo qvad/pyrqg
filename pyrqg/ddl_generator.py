@@ -225,7 +225,7 @@ class DDLGenerator:
     
     def generate_create_table(self, table: TableDefinition) -> str:
         """Generate CREATE TABLE statement"""
-        lines = [f"CREATE TABLE {table.name} ("]
+        lines = [f"CREATE TABLE IF NOT EXISTS {table.name} ("]
         
         # Add columns
         col_lines = []
@@ -262,7 +262,7 @@ class DDLGenerator:
     def generate_create_index(self, table_name: str, index: IndexDefinition) -> str:
         """Generate CREATE INDEX statement"""
         unique = "UNIQUE " if index.unique else ""
-        sql = f"CREATE {unique}INDEX {index.name} ON {table_name}"
+        sql = f"CREATE {unique}INDEX IF NOT EXISTS {index.name} ON {table_name}"
         
         if index.method != "btree":
             sql += f" USING {index.method}"
@@ -488,7 +488,7 @@ class DDLGenerator:
                 ColumnDefinition("created_at", "TIMESTAMP", nullable=False, default="CURRENT_TIMESTAMP")
             ],
             constraints=[
-                TableConstraint(None, "PRIMARY KEY", ["id"]),
+                TableConstraint(None, "PRIMARY KEY", ["id", "created_at"]),
                 TableConstraint("fk_audit_user", "FOREIGN KEY", ["user_id"],
                                references_table="users", references_columns=["id"],
                                on_delete="SET NULL", deferrable=True)
@@ -497,7 +497,7 @@ class DDLGenerator:
                 IndexDefinition("idx_audit_table_record", ["table_name", "record_id"]),
                 IndexDefinition("idx_audit_user_date", ["user_id", "created_at"]),
                 IndexDefinition("idx_audit_recent_deletes", ["table_name", "created_at"],
-                               where_clause="action = 'DELETE' AND created_at > CURRENT_DATE - INTERVAL '30 days'"),
+                               where_clause="action = 'DELETE' AND created_at >= DATE '2000-01-01'"),
                 IndexDefinition("idx_audit_data_gin", ["changed_data"], method="gin")
             ],
             partitioned_by="RANGE (created_at)"
@@ -706,6 +706,10 @@ class DDLGenerator:
         # Generate CREATE statements
         for table in tables:
             ddl_statements.append(self.generate_create_table(table))
+            if table.partitioned_by:
+                ddl_statements.append(
+                    f"CREATE TABLE IF NOT EXISTS {table.name}_default PARTITION OF {table.name} DEFAULT"
+                )
             
             # Add indexes
             for index in table.indexes:

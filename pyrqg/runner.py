@@ -16,7 +16,7 @@ Usage examples:
   python -m pyrqg.runner all --init-schema --count 5
 
   # Run a single grammar
-  python -m pyrqg.runner grammar --grammar dml_unique --count 100 --seed 123 --echo-queries
+  python -m pyrqg.runner grammar --grammar snowflake --count 100 --seed 123
 
 Notes:
 - Default DSN can be provided via env var PYRQG_DSN; CLI --dsn overrides it.
@@ -28,7 +28,8 @@ import os
 import sys
 import argparse
 import time
-from typing import List, Optional, Tuple
+from pathlib import Path
+from typing import List, Optional, Tuple, TextIO
 
 try:
     import psycopg2  # type: ignore
@@ -47,8 +48,12 @@ def _connect(dsn: Optional[str]) -> PGConnection:
     return psycopg2.connect(dsn_effective)  # type: ignore
 
 
-def _exec_statements(conn: PGConnection, statements: List[str], echo: bool = False,
-                     continue_on_error: bool = True) -> Tuple[int, int]:
+def _print_error(message: str, query: str, *, stream: TextIO) -> None:
+    print(f"[ERROR] {message}\nWhile executing: {query}", file=stream)
+
+
+def _exec_statements(conn: PGConnection, statements: List[str], continue_on_error: bool = True,
+                     errors_only: bool = False, error_file: Optional[TextIO] = None) -> Tuple[int, int]:
     ok, err = 0, 0
     conn.autocommit = True
     with conn.cursor() as cur:
@@ -60,14 +65,14 @@ def _exec_statements(conn: PGConnection, statements: List[str], echo: bool = Fal
             parts = [p.strip() for p in sql.split(';') if p.strip()]
             for p in parts:
                 try:
-                    if echo:
-                        print(p + ';')
                     cur.execute(p)
                     ok += 1
                 except Exception as e:
                     err += 1
-                    if echo or not continue_on_error:
-                        print(f"[ERROR] {e}\nWhile executing: {p}", file=sys.stderr)
+                    error_stream = sys.stdout if errors_only else sys.stderr
+                    _print_error(str(e), p, stream=error_stream)
+                    if error_file is not None:
+                        _print_error(str(e), p, stream=error_file)
                     if not continue_on_error:
                         raise
     return ok, err
@@ -88,6 +93,7 @@ def _generate_queries_for_grammar(rqg: RQG, grammar: str, count: int, seed: Opti
 
 def action_grammar(rqg: RQG, args: argparse.Namespace) -> int:
     queries = _generate_queries_for_grammar(rqg, args.grammar, args.count, args.seed)
+    unique_queries = len({q.strip() for q in queries if q.strip()})
     if args.output:
         with open(args.output, 'w', encoding='utf-8') as f:
             for q in queries:
@@ -97,11 +103,31 @@ def action_grammar(rqg: RQG, args: argparse.Namespace) -> int:
 
     if args.dsn or os.environ.get("PYRQG_DSN") or args.execute:
         # Execute generated queries
+        error_handle: Optional[TextIO] = None
         conn = _connect(args.dsn)
         try:
-            ok, err = _exec_statements(conn, queries, echo=args.echo_queries, continue_on_error=args.continue_on_error)
-            print(f"Executed grammar '{args.grammar}': ok={ok}, errors={err}")
+            if args.error_log:
+                log_path = Path(args.error_log)
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                error_handle = log_path.open('a', encoding='utf-8')
+            ok, err = _exec_statements(
+                conn,
+                queries,
+                continue_on_error=args.continue_on_error,
+                errors_only=args.errors_only,
+                error_file=error_handle,
+            )
+            print(
+                "Executed grammar '{grammar}': ok={ok}, errors={err}, unique_queries={unique}".format(
+                    grammar=args.grammar,
+                    ok=ok,
+                    err=err,
+                    unique=unique_queries,
+                )
+            )
         finally:
+            if error_handle is not None:
+                error_handle.close()
             conn.close()
         return 0 if err == 0 or args.continue_on_error else 2
 
@@ -111,9 +137,9 @@ def action_grammar(rqg: RQG, args: argparse.Namespace) -> int:
     return 0
 
 
-def _ensure_default_schema(conn: PGConnection, rqg: RQG, echo: bool) -> None:
+def _ensure_default_schema(conn: PGConnection, rqg: RQG) -> None:
     ddl = rqg.generate_ddl()
-    _exec_statements(conn, ddl, echo=echo, continue_on_error=True)
+    _exec_statements(conn, ddl, continue_on_error=True)
 
 
 def action_all(rqg: RQG, args: argparse.Namespace) -> int:
@@ -127,35 +153,54 @@ def action_all(rqg: RQG, args: argparse.Namespace) -> int:
     conn = _connect(args.dsn)
     try:
         if args.init_schema:
-            _ensure_default_schema(conn, rqg, echo=args.echo_queries)
+            _ensure_default_schema(conn, rqg)
 
         total_ok = 0
         total_err = 0
-        for name in grammars:
-            try:
-                queries = _generate_queries_for_grammar(rqg, name, args.count, args.seed)
-            except Exception as e:
-                total_err += 1
-                if args.print_errors:
-                    print(f"[GEN-ERROR] Grammar '{name}': {e}", file=sys.stderr)
-                if not args.continue_on_error:
-                    raise
-                continue
+        error_handle: Optional[TextIO] = None
+        if args.error_log:
+            log_path = Path(args.error_log)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            error_handle = log_path.open('a', encoding='utf-8')
+        try:
+            for name in grammars:
+                try:
+                    queries = _generate_queries_for_grammar(rqg, name, args.count, args.seed)
+                except Exception as e:
+                    total_err += 1
+                    if args.errors_only:
+                        print(f"[GEN-ERROR] Grammar '{name}': {e}", file=sys.stdout)
+                    else:
+                        print(f"[GEN-ERROR] Grammar '{name}': {e}", file=sys.stderr)
+                    if not args.continue_on_error:
+                        raise
+                    continue
 
-            try:
-                ok, err = _exec_statements(conn, queries, echo=args.echo_queries, continue_on_error=True)
-                total_ok += ok
-                total_err += err
-                if args.verbose:
-                    print(f"[{name}] ok={ok} err={err}")
-            except Exception as e:
-                total_err += 1
-                if args.print_errors:
-                    print(f"[EXEC-ERROR] Grammar '{name}': {e}", file=sys.stderr)
-                if not args.continue_on_error:
-                    raise
+                try:
+                    ok, err = _exec_statements(
+                        conn,
+                        queries,
+                        continue_on_error=True,
+                        errors_only=args.errors_only,
+                        error_file=error_handle,
+                    )
+                    total_ok += ok
+                    total_err += err
+                    if args.verbose:
+                        print(f"[{name}] ok={ok} err={err}")
+                except Exception as e:
+                    total_err += 1
+                    if args.errors_only:
+                        print(f"[EXEC-ERROR] Grammar '{name}': {e}", file=sys.stdout)
+                    else:
+                        print(f"[EXEC-ERROR] Grammar '{name}': {e}", file=sys.stderr)
+                    if not args.continue_on_error:
+                        raise
 
-        dur = time.time() - start
+            dur = time.time() - start
+        finally:
+            if error_handle is not None:
+                error_handle.close()
         print(f"All grammars done: grammars={len(grammars)} total_ok={total_ok} total_err={total_err} time={dur:.2f}s")
         return 0 if total_err == 0 or args.continue_on_error else 2
     finally:
@@ -180,7 +225,7 @@ def action_ddl(rqg: RQG, args: argparse.Namespace) -> int:
 
         if args.dsn or os.environ.get("PYRQG_DSN") or args.execute:
             conn = _connect(args.dsn)
-            ok, err = _exec_statements(conn, ddls, echo=args.echo_queries, continue_on_error=True)
+            ok, err = _exec_statements(conn, ddls, continue_on_error=True)
             print(f"Executed DDL: ok={ok} errors={err}")
             return 0 if err == 0 else 2
 
@@ -196,10 +241,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="pyrqg.runner", description="PyRQG Runner")
     p.add_argument("mode", nargs="?", default="list", choices=["list", "grammar", "all", "ddl"], help="Runner mode")
     p.add_argument("--dsn", dest="dsn", default=None, help="PostgreSQL/Yugabyte DSN (env PYRQG_DSN also supported)")
-    p.add_argument("--echo-queries", action="store_true", help="Echo SQL statements during execution")
     p.add_argument("--continue-on-error", action="store_true", help="Do not stop on first error")
-    p.add_argument("--print-errors", action="store_true", help="Print generation/execution errors")
+    p.add_argument("--errors-only", action="store_true", help="Print only failing SQL statements (to stdout)")
     p.add_argument("--execute", action="store_true", help="Execute statements even if --dsn not provided (uses env/default)")
+    p.add_argument("--error-log", default=None, help="Optional file to append failing SQL statements")
     p.add_argument("--seed", type=int, default=None, help="Base seed for deterministic generation")
 
     sub = {}
@@ -207,13 +252,13 @@ def build_parser() -> argparse.ArgumentParser:
     # grammar
     sp = argparse.ArgumentParser(add_help=False)
     sp.add_argument("--grammar", required=False, help="Grammar name to run")
-    sp.add_argument("--count", type=int, default=10, help="Number of queries to generate/execute")
+    sp.add_argument("--count", type=int, default=100, help="Number of queries to generate/execute")
     sp.add_argument("--output", default=None, help="Output file to write queries instead of executing/printing")
     sub["grammar"] = sp
 
     # all
     sp = argparse.ArgumentParser(add_help=False)
-    sp.add_argument("--count", type=int, default=5, help="Number of queries per grammar")
+    sp.add_argument("--count", type=int, default=100, help="Number of queries per grammar")
     sp.add_argument("--init-schema", action="store_true", help="Initialize a basic default schema before running")
     sp.add_argument("--verbose", action="store_true", help="Per-grammar summary")
     sub["all"] = sp

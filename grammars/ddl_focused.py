@@ -4,10 +4,56 @@ Generates complex CREATE TABLE, ALTER TABLE, and INDEX statements
 """
 
 from pyrqg.dsl.core import Grammar, Choice, Template, Lambda, Optional
+from pyrqg.schema_support import get_schema_catalog
 import time
 
 # Create the grammar
 g = Grammar()
+
+CATALOG = get_schema_catalog()
+EXISTING_TABLES = sorted(CATALOG.list_tables())
+TABLE_COLUMNS = {name: list(info.columns.keys()) for name, info in CATALOG.tables.items()}
+TABLE_NUMERIC_COLUMNS = {
+    name: [col for col, colinfo in info.columns.items() if colinfo.base_type in {
+        'integer', 'bigint', 'smallint', 'numeric', 'decimal', 'real', 'double precision'
+    }]
+    for name, info in CATALOG.tables.items()
+}
+
+def _table_rule(ctx):
+    if ctx.state.pop('ddl_table_forced', False):
+        table = ctx.state.get('ddl_table')
+        if table in EXISTING_TABLES:
+            return table
+    table = ctx.rng.choice(EXISTING_TABLES)
+    ctx.state['ddl_table'] = table
+    return table
+
+
+def _current_existing_table(ctx):
+    table = ctx.state.get('ddl_table')
+    if table not in EXISTING_TABLES:
+        table = ctx.rng.choice(EXISTING_TABLES)
+        ctx.state['ddl_table'] = table
+    ctx.state['ddl_table_forced'] = True
+    return table
+
+
+def _existing_column(ctx):
+    table = _current_existing_table(ctx)
+    cols = TABLE_COLUMNS.get(table)
+    if cols:
+        return ctx.rng.choice(cols)
+    return 'id'
+
+
+def _existing_numeric_column(ctx):
+    table = _current_existing_table(ctx)
+    cols = TABLE_NUMERIC_COLUMNS.get(table)
+    if cols:
+        return ctx.rng.choice(cols)
+    return _existing_column(ctx)
+
 
 # Define the root rule - generates various DDL statements
 g.rule("query", Choice(
@@ -22,7 +68,10 @@ g.rule("query", Choice(
 
 # Table names with uniqueness
 g.rule("table_name", Lambda(lambda ctx: f"table_{ctx.rng.randint(1, 100)}_{int(time.time() * 1000) % 100000}"))
-g.rule("existing_table", Choice("users", "products", "orders", "inventory", "customers"))
+g.rule("existing_table", _table_rule)
+
+g.rule("existing_column", _existing_column)
+g.rule("existing_numeric_column", _existing_numeric_column)
 
 # Column types
 g.rule("data_type", Choice(
@@ -93,17 +142,16 @@ g.rule("column_constraint", Choice(
 ))
 
 g.rule("add_constraint", Choice(
-    Template("ALTER TABLE {existing_table} ADD CONSTRAINT {constraint_name} UNIQUE ({column_name}, {column_name2:column_name})"),
-    Template("ALTER TABLE {existing_table} ADD CONSTRAINT {constraint_name} CHECK ({column_name} != {column_name2:column_name})"),
-    Template("ALTER TABLE {existing_table} ADD CONSTRAINT {constraint_name} CHECK (price > cost)"),
-    Template("ALTER TABLE {existing_table} ADD CONSTRAINT {constraint_name} PRIMARY KEY ({column_name}, {column_name2:column_name})")
+    Template("ALTER TABLE {existing_table} ADD CONSTRAINT {constraint_name} UNIQUE ({existing_column}, {existing_column2:existing_column})"),
+    Template("ALTER TABLE {existing_table} ADD CONSTRAINT {constraint_name} CHECK ({existing_column} != {existing_column2:existing_column})"),
+    Template("ALTER TABLE {existing_table} ADD CONSTRAINT {constraint_name} CHECK ({existing_numeric_column} > {existing_numeric_column2:existing_numeric_column})"),
 ))
 
 g.rule("constraint_name", Lambda(lambda ctx: f"constraint_{ctx.rng.randint(1000, 9999)}_{int(time.time() * 1000) % 100000}"))
 
 g.rule("add_foreign_key", Template(
     "ALTER TABLE {existing_table} ADD CONSTRAINT {constraint_name} " +
-    "FOREIGN KEY ({column_name}) REFERENCES {ref_table:existing_table}(id) {fk_action}"
+    "FOREIGN KEY ({existing_column}) REFERENCES {ref_table:existing_table}(id) {fk_action}"
 ))
 
 g.rule("fk_action", Choice(
@@ -114,13 +162,13 @@ g.rule("fk_action", Choice(
     "ON DELETE CASCADE ON UPDATE CASCADE"
 ))
 
-g.rule("drop_column", Template("ALTER TABLE {existing_table} DROP COLUMN IF EXISTS {column_name}"))
+g.rule("drop_column", Template("ALTER TABLE {existing_table} DROP COLUMN IF EXISTS {existing_column}"))
 
 g.rule("alter_column", Choice(
-    Template("ALTER TABLE {existing_table} ALTER COLUMN {column_name} SET NOT NULL"),
-    Template("ALTER TABLE {existing_table} ALTER COLUMN {column_name} DROP NOT NULL"),
-    Template("ALTER TABLE {existing_table} ALTER COLUMN {column_name} SET DEFAULT 0"),
-    Template("ALTER TABLE {existing_table} ALTER COLUMN {column_name} TYPE {data_type}")
+    Template("ALTER TABLE {existing_table} ALTER COLUMN {existing_column} SET NOT NULL"),
+    Template("ALTER TABLE {existing_table} ALTER COLUMN {existing_column} DROP NOT NULL"),
+    Template("ALTER TABLE {existing_table} ALTER COLUMN {existing_column} SET DEFAULT 0"),
+    Template("ALTER TABLE {existing_table} ALTER COLUMN {existing_column} TYPE {data_type}")
 ))
 
 # CREATE INDEX statements
@@ -135,18 +183,17 @@ g.rule("create_unique_index", Template(
 g.rule("index_name", Lambda(lambda ctx: f"idx_{ctx.rng.randint(1000, 9999)}_{int(time.time() * 1000) % 100000}"))
 
 g.rule("index_columns", Choice(
-    Template("{column_name}"),
-    Template("{column_name}, {column_name2:column_name}"),
-    Template("{column_name} DESC, {column_name2:column_name} ASC"),
-    Template("{column_name}, {column_name2:column_name}, {column_name3:column_name}")
+    Template("{existing_column}"),
+    Template("{existing_column}, {existing_column2:existing_column}"),
+    Template("{existing_column} DESC, {existing_column2:existing_column} ASC"),
+    Template("{existing_column}, {existing_column2:existing_column}, {existing_column3:existing_column}")
 ))
 
 from pyrqg.dsl.core import ref
 g.rule("index_options", Choice(
     "",  # default btree
-    Template("WHERE status = 'active'"),
-    Template("WHERE {col} IS NOT NULL", col=ref('column_name')),
-    Template("WHERE created_at > CURRENT_DATE - INTERVAL '30 days'")
+    Template("WHERE {col} IS NOT NULL", col=ref('existing_column')),
+    Template("WHERE {col} > 0", col=ref('existing_numeric_column'))
 ))
 
 # DROP TABLE
@@ -155,12 +202,12 @@ g.rule("drop_table", Template("DROP TABLE IF EXISTS {table_name} CASCADE"))
 # CREATE VIEW
 g.rule("create_view", Template("""CREATE VIEW view_{view_suffix} AS
 SELECT 
-    {column_name},
-    {column_name2:column_name},
+    {existing_column},
+    {existing_column2:existing_column},
     COUNT(*) as count
 FROM {existing_table}
-WHERE {column_name} IS NOT NULL
-GROUP BY {column_name}, {column_name2}"""))
+WHERE {existing_column} IS NOT NULL
+GROUP BY {existing_column}, {existing_column2:existing_column}"""))
 
 g.rule("view_suffix", Lambda(lambda ctx: f"{ctx.rng.randint(100, 999)}_{int(time.time() * 1000) % 10000}"))
 
@@ -231,12 +278,12 @@ WITH DATA"""))
 
 # Function-based index
 g.rule("create_functional_index", Template(
-    "CREATE INDEX {index_name} ON {existing_table} (LOWER({column_name}), DATE_TRUNC('month', created_at))"
+    "CREATE INDEX {index_name} ON {existing_table} (LOWER({existing_column}), DATE_TRUNC('month', created_at))"
 ))
 
 # GiST index for full-text search
 g.rule("create_text_search_index", Template(
-    "CREATE INDEX {index_name} ON {existing_table} USING gin(to_tsvector('english', {column_name}))"
+    "CREATE INDEX {index_name} ON {existing_table} USING gin(to_tsvector('english', {existing_column}))"
 ))
 
 if __name__ == "__main__":

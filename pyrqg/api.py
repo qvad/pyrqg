@@ -130,6 +130,10 @@ class QueryGenerator:
 
         # Select columns to insert (exclude auto-generated like 'id')
         cols = [c for c in all_col_names if c not in ['id', 'created_at', 'updated_at']]
+        if not cols:
+            cols = list(all_col_names)
+        if not cols:
+            raise ValueError(f"Table '{table}' does not have any columns available for INSERT")
         insert_cols = self.rng.sample(cols, k=self.rng.randint(1, len(cols)))
         
         # Generate values
@@ -202,7 +206,12 @@ class QueryGenerator:
 
         # Select columns to update
         updateable_cols = [c for c in all_col_names if c not in ['id', 'created_at']]
-        update_cols = self.rng.sample(updateable_cols, k=self.rng.randint(1, min(3, len(updateable_cols))))
+        if not updateable_cols:
+            updateable_cols = list(all_col_names)
+        if not updateable_cols:
+            raise ValueError(f"Table '{table}' does not have any columns available for UPDATE")
+        max_cols = min(3, len(updateable_cols))
+        update_cols = self.rng.sample(updateable_cols, k=self.rng.randint(1, max_cols))
         
         # Generate SET clause
         set_parts = []
@@ -333,122 +342,17 @@ class RQG:
             if alias and alias not in self.grammars and gobj is not None:
                 self.grammars[alias] = gobj
         
-        # DML grammars
         try:
-            from grammars.dml_unique import g as dml_unique
-            self.grammars['dml_unique'] = dml_unique
-            # Path-style alias (same at top level)
-            _add_alias('dml_unique', dml_unique)
+            from grammars.ddl_focused import g as ddl
+            self.grammars['ddl'] = ddl
         except Exception:
             pass
-        
-        try:
-            from grammars.dml_yugabyte import g as dml_yugabyte
-            self.grammars['dml_yugabyte'] = dml_yugabyte
-            _add_alias('dml_yugabyte', dml_yugabyte)
-        except Exception:
-            pass
-        
-        try:
-            from grammars.dml_fixed import g as dml_fixed
-            self.grammars['dml_fixed'] = dml_fixed
-            _add_alias('dml_fixed', dml_fixed)
-        except Exception:
-            pass
-        
-        # YugabyteDB grammars
-        try:
-            from grammars.yugabyte.transactions_postgres import g as txn_grammar
-            self.grammars['yugabyte_transactions'] = txn_grammar
-            _add_alias('yugabyte/transactions_postgres', txn_grammar)
-        except Exception:
-            pass
-        
-        try:
-            from grammars.yugabyte.optimizer_subquery_portable import g as subquery_grammar
-            self.grammars['yugabyte_subquery'] = subquery_grammar
-            _add_alias('yugabyte/optimizer_subquery_portable', subquery_grammar)
-        except Exception:
-            pass
-        
-        try:
-            from grammars.yugabyte.outer_join_portable import g as outer_join_grammar
-            self.grammars['yugabyte_outer_join'] = outer_join_grammar
-            _add_alias('yugabyte/outer_join_portable', outer_join_grammar)
-        except Exception:
-            pass
-        
-        # Workload-specific grammars
-        workload_grammars = [
-            ('workload_insert', 'grammars.workload.insert_focused'),
-            ('workload_update', 'grammars.workload.update_focused'),
-            ('workload_delete', 'grammars.workload.delete_focused'),
-            ('workload_upsert', 'grammars.workload.upsert_focused'),
-            ('workload_select', 'grammars.workload.select_focused'),
-            ('ddl_focused', 'grammars.ddl_focused'),
-            ('ddl_aux', 'grammars.ddl_aux'),
-            ('dml_with_functions', 'grammars.dml_with_functions'),
-            # New comprehensive test grammars
-            ('merge_statement', 'grammars.merge_statement'),
-            ('security_testing', 'grammars.security_testing'),
-            ('data_integrity_testing', 'grammars.data_integrity_testing'),
-            ('txn_concurrency', 'grammars.txn_concurrency'),
-            ('performance_edge_cases', 'grammars.performance_edge_cases')
-        ]
-        
-        for name, module_path in workload_grammars:
-            try:
-                module = __import__(module_path, fromlist=['g'])
-                self.grammars[name] = module.g
-                # Add a path-style alias derived from the module path
-                path_alias = module_path.replace('grammars.', '').replace('.', '/')
-                _add_alias(path_alias, module.g)
-            except Exception:
-                pass
 
-        # Unified simple aliases for common categories
         try:
-            from grammars.workload.select_focused import g as _selects
-            _add_alias('selects', _selects)
+            from grammars.snowflake import grammar as snowflake
+            self.grammars['snowflake'] = snowflake
         except Exception:
             pass
-        try:
-            from grammars.workload.update_focused import g as _updates
-            _add_alias('updates', _updates)
-        except Exception:
-            pass
-        try:
-            from grammars.workload.insert_focused import g as _inserts
-            _add_alias('inserts', _inserts)
-        except Exception:
-            pass
-        try:
-            from grammars.functions_ddl import g as _functions
-            _add_alias('functions', _functions)
-        except Exception:
-            pass
-        try:
-            from grammars.dml_with_functions import g as _functions_in_dml
-            _add_alias('functions_in_dml', _functions_in_dml)
-        except Exception:
-            pass
-        # New top-level separated grammars by syntax
-        try:
-            from grammars.update import g as _update_only
-            _add_alias('update', _update_only)
-        except Exception:
-            pass
-        try:
-            from grammars.delete import g as _delete_only
-            _add_alias('delete', _delete_only)
-        except Exception:
-            pass
-        
-        # Alias for backward compatibility
-        if 'dml_unique' in self.grammars:
-            self.grammars['dml'] = self.grammars['dml_unique']
-        if 'yugabyte_transactions' in self.grammars:
-            self.grammars['transactions'] = self.grammars['yugabyte_transactions']
 
     def _load_plugin_grammars(self):
         """Load user-provided grammars from environment variable PYRQG_GRAMMARS.
@@ -545,16 +449,34 @@ class RQG:
     
     def generate_ddl(self, tables: Optional[List[str]] = None) -> List[str]:
         """Generate CREATE TABLE statements using simple DDL"""
-        ddl_statements = []
+        ddl_statements: List[str] = []
+
+        # When no custom tables are registered, emit the rich sample schema that
+        # powers the schema catalog so that CLI `--init-schema` creates every
+        # table referenced by our grammars.
+        if not self.tables:
+            sample_tables = self.ddl_generator.generate_sample_tables()
+            selected = sample_tables
+            if tables:
+                allowed = set(tables)
+                selected = [table for table in sample_tables if table.name in allowed]
+            for table_def in selected:
+                ddl_statements.append(self.ddl_generator.generate_create_table(table_def))
+                for index in table_def.indexes:
+                    ddl_statements.append(
+                        self.ddl_generator.generate_create_index(table_def.name, index)
+                    )
+            return ddl_statements
+
         tables_to_generate = tables or list(self.tables.keys())
-        
+
         for table_name in tables_to_generate:
             if table_name not in self.tables:
                 continue
-            
+
             table = self.tables[table_name]
             columns = []
-            
+
             for col in table.columns:
                 col_def = f"{col['name']} {col['type'].upper()}"
                 if col['name'] == table.primary_key:
@@ -562,14 +484,14 @@ class RQG:
                 elif col['name'] in table.unique_keys:
                     col_def += " UNIQUE"
                 columns.append(col_def)
-            
+
             # Add foreign keys
             for fk_col, fk_ref in table.foreign_keys.items():
                 columns.append(f"FOREIGN KEY ({fk_col}) REFERENCES {fk_ref}")
-            
+
             ddl = f"CREATE TABLE {table_name} (\n  " + ",\n  ".join(columns) + "\n)"
             ddl_statements.append(ddl)
-        
+
         return ddl_statements
     
     def generate_complex_ddl(self, num_tables: int = 5, 
@@ -598,36 +520,8 @@ class RQG:
     def list_grammars(self) -> Dict[str, str]:
         """List all available grammars with descriptions"""
         descriptions = {
-            # General DML grammars
-            'dml_unique': 'Enhanced DML with 100% query uniqueness',
-            'dml_yugabyte': 'YugabyteDB DML with ON CONFLICT, RETURNING, CTEs',
-            'dml_fixed': 'Fixed DML grammar with basic features',
-            
-            # YugabyteDB specific
-            'yugabyte_transactions': 'YugabyteDB transaction patterns',
-            'yugabyte_subquery': 'Complex subqueries and optimizer tests',
-            'yugabyte_outer_join': 'Outer join patterns for YugabyteDB',
-            
-            # Workload-focused grammars
-            'workload_insert': 'INSERT-focused queries for workload testing',
-            'workload_update': 'UPDATE-focused queries for workload testing',
-            'workload_delete': 'DELETE-focused queries for workload testing',
-            'workload_upsert': 'UPSERT/INSERT ON CONFLICT patterns',
-            'workload_select': 'SELECT-focused queries with joins, subqueries',
-            'ddl_focused': 'DDL-focused with complex constraints, indexes, views',
-            'ddl_aux': 'Functions and procedures DDL operations',
-            'dml_with_functions': 'DML queries using SQL functions',
-            
-            # Comprehensive test grammars
-            'merge_statement': 'PostgreSQL 15+ MERGE statement testing',
-            'security_testing': 'Security features: GRANT/REVOKE, roles, RLS',
-            'data_integrity_testing': 'Constraint violations and data integrity edge cases',
-            'txn_concurrency': 'Transaction isolation and concurrency testing',
-            'performance_edge_cases': 'Query planner and performance boundary testing',
-            
-            # Aliases
-            'dml': 'Alias for dml_unique',
-            'transactions': 'Alias for yugabyte_transactions'
+            'ddl': 'Complex PostgreSQL DDL statements',
+            'snowflake': 'Simplified Snowflake workload',
         }
         return {name: descriptions.get(name, 'Custom grammar') 
                 for name in self.grammars.keys()}
@@ -716,13 +610,13 @@ class RQG:
                  seed: Optional[int] = None) -> List[str]:
         """Convenience wrapper to generate queries.
         
-        - grammar: If None, uses 'dml_unique' when available, otherwise the first loaded.
+        - grammar: If None, uses the first registered grammar.
         - rule: Grammar rule to generate from (default: 'query').
         - count: Number of queries.
         - seed: Optional base seed; each query increments seed deterministically.
         """
         if grammar is None:
-            grammar = 'dml_unique' if 'dml_unique' in self.grammars else next(iter(self.grammars.keys()))
+            grammar = next(iter(self.grammars.keys()))
         return self.generate_from_grammar(grammar, rule=rule, count=count, seed=seed)
 
     # ================================
@@ -738,24 +632,11 @@ class RQG:
                                                   functions: int = 5,
                                                   include_procedures: bool = True,
                                                   seed: Optional[int] = None) -> List[str]:
-        """Generate random ALTER TABLE constraints and function/procedure DDL.
-        - constraints: number of ALTER/INDEX/DDL statements drawn from ddl_focused
-        - functions: number of function/procedure statements from functions_ddl
-        """
-        out: List[str] = []
+        """Generate random ALTER TABLE statements using the DDL grammar."""
+        if 'ddl' not in self.grammars:
+            return []
         base_seed = seed or random.randint(1, 1_000_000)
-        # Constraints and miscellanous DDL
-        if 'ddl_focused' in self.grammars:
-            # Mix alter/index/view by just using the generic 'query' rule for variety
-            out += self.generate_from_grammar('ddl_focused', rule='query', count=constraints, seed=base_seed)
-        # Functions/procedures
-        if 'functions_ddl' in self.grammars:
-            func_seed = base_seed + 10_000
-            # Alternate create_function and create_procedure when requested
-            for i in range(functions):
-                rule = 'create_procedure' if include_procedures and (i % 3 == 2) else 'create_function'
-                out += self.generate_from_grammar('functions_ddl', rule=rule, count=1, seed=func_seed + i)
-        return out
+        return self.generate_from_grammar('ddl', rule='query', count=constraints + functions, seed=base_seed)
 
     def generate_random_data_inserts(self, rows_per_table: int = 10, seed: Optional[int] = None,
                                      multi_row: bool = False, on_conflict: bool = False,
@@ -781,47 +662,22 @@ class RQG:
                            include_inserts: bool = True,
                            include_updates: bool = True,
                            include_deletes: bool = True) -> List[str]:
-        """Generate a mixed workload of SELECT/INSERT/UPDATE/DELETE queries.
-        - If include_functions is True, mixes in queries from dml_with_functions.
-        - Otherwise, uses workload-focused grammars and QueryGenerator for diversity.
-        """
+        """Generate a mixed workload using the simple QueryGenerator fallback."""
         out: List[str] = []
         rng = random.Random(seed)
-        base_seed = seed or rng.randint(1, 1_000_000)
-
-        # Prefer grammar-driven generation for richer SQL
-        sources: List[str] = []
-        if include_functions and 'dml_with_functions' in self.grammars:
-            sources.append('dml_with_functions')
-        if include_selects and 'workload_select' in self.grammars:
-            sources.append('workload_select')
-        if include_inserts and 'workload_insert' in self.grammars:
-            sources.append('workload_insert')
-        if include_updates and 'workload_update' in self.grammars:
-            sources.append('workload_update')
-        if include_deletes and 'workload_delete' in self.grammars:
-            sources.append('workload_delete')
-
-        # Fallback: if no grammars, use simple QueryGenerator
-        use_qg_fallback = len(sources) == 0
-        qg = self.create_generator(seed=base_seed) if use_qg_fallback else None
-
-        for i in range(count):
-            if use_qg_fallback:
-                choice = rng.choice(['select', 'insert', 'update', 'delete'])
-                if choice == 'select' and include_selects:
-                    out.append(qg.select().sql)
-                elif choice == 'insert' and include_inserts:
-                    out.append(qg.insert().sql)
-                elif choice == 'update' and include_updates:
-                    out.append(qg.update().sql)
-                elif choice == 'delete' and include_deletes:
-                    out.append(qg.delete().sql)
-                else:
-                    out.append(qg.select().sql)
+        qg = self.create_generator(seed=seed)
+        for _ in range(count):
+            mode = rng.choice(['select', 'insert', 'update', 'delete'])
+            if mode == 'select' and include_selects:
+                out.append(qg.select().sql)
+            elif mode == 'insert' and include_inserts:
+                out.append(qg.insert().sql)
+            elif mode == 'update' and include_updates:
+                out.append(qg.update().sql)
+            elif mode == 'delete' and include_deletes:
+                out.append(qg.delete().sql)
             else:
-                gname = rng.choice(sources)
-                out += self.generate_from_grammar(gname, rule='query', count=1, seed=base_seed + i)
+                out.append(qg.select().sql)
         return out
 
 # Convenience function

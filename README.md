@@ -44,14 +44,16 @@ python -m pyrqg.runner ddl --num-tables 5 --seed 42 --output schema.sql
 # Generate a single random table with random PK, indexes and properties
 python -m pyrqg.runner ddl --table demo --num-columns 8 --num-constraints 4 --seed 7
 
-# Generate 100 queries from a built-in grammar
-python -m pyrqg.runner grammar --grammar dml_yugabyte --count 100 --seed 123 --output queries.sql
+# Generate 100 queries from the Snowflake grammar
+python -m pyrqg.runner grammar --grammar snowflake --count 100 --seed 123 --output queries.sql
 
 # Execute generated queries by applying them with psql
-# Example: generate to file and apply to a running database
-python -m pyrqg.runner grammar --grammar dml_unique --count 100 --output queries.sql
-psql "postgresql://postgres:password@localhost:5432/postgres" -f queries.sql
+# Example: generate DDL to file and apply to a running database
+python -m pyrqg.runner grammar --grammar ddl_focused --count 100 --output schema.sql
+psql "postgresql://postgres:password@localhost:5432/postgres" -f schema.sql
 ```
+
+Tip: pass `--errors-only` when running `pyrqg.runner` to emit just the failing SQL statements (they go to stdout). Combine it with `--error-log path/to/file` if you want to capture every failure in a log without echoing successful queries.
 
 ### Local Database (PostgreSQL) - Quick Launch
 
@@ -86,22 +88,6 @@ If you don't have psql installed locally on Windows, you can check via Docker:
 ```powershell
 docker exec -it pyrqg-postgres psql -U postgres -d postgres -c "SELECT version();"
 ```
-
-Run PyRQG end-to-end against this local PostgreSQL (Windows PowerShell):
-
-```powershell
-# Activate venv if not yet active
-python -m venv .venv; .\.venv\Scripts\Activate.ps1; pip install -r requirements.txt
-
-# Execute: create random tables, apply ALTERs, then run 1,000 queries
-python -m pyrqg.runner exec --dsn "postgresql://postgres:password@localhost:5432/postgres" --num-tables 10 --count 1000 --use-filter --print-errors --error-samples 5
-```
-
-Notes:
-- The configs (e.g., configs/quick_test.json) assume a database named "postgres"; the tool will create and use the "pyrqg" schema automatically via DDL.
-- Stop and remove when done: `docker rm -f pyrqg-postgres`.
-- For a clean slate, also remove the volume: `docker volume rm pgdata_pyrqg`.
-- Make sure Python deps are installed (PowerShell): `python -m venv .venv; .\.venv\Scripts\Activate.ps1; pip install -r requirements.txt`.
 
 ### Local Database (YugabyteDB, port 5433) - Quick Launch
 
@@ -142,7 +128,7 @@ Run PyRQG against YugabyteDB and apply queries with psql:
 
 ```bash
 # Generate queries to a file, then apply with psql (YugabyteDB listens on 5433)
-python -m pyrqg.runner grammar --grammar dml_yugabyte --count 50 --output queries.sql
+python -m pyrqg.runner grammar --grammar snowflake --count 50 --output queries.sql
 psql "postgresql://postgres:password@localhost:5433/postgres" -f queries.sql
 ```
 
@@ -160,13 +146,12 @@ from pyrqg.api import create_rqg
 rqg = create_rqg()
 
 # Generate queries from grammar
-queries = rqg.generate_from_grammar('dml_unique', count=10)
+queries = rqg.generate_from_grammar('snowflake', count=10)
 for query in queries:
     print(query)
 
-# Generate schema-aware queries for PostgreSQL
-rqg_pg = create_rqg()
-queries = rqg_pg.generate_from_grammar('dml_unique', count=10)
+# Generate DDL statements
+ddl_statements = rqg.generate_ddl()
 ```
 
 ### Quick start: Runner CLI examples
@@ -182,13 +167,13 @@ python -m pyrqg.runner list
 Generate queries from a specific grammar and print to console:
 
 ```bash
-python -m pyrqg.runner grammar --grammar dml_unique --count 5
+python -m pyrqg.runner grammar --grammar snowflake --count 5
 ```
 
 Generate queries and save to a file (no execution):
 
 ```bash
-python -m pyrqg.runner grammar --grammar dml_unique --count 50 --output queries.sql
+python -m pyrqg.runner grammar --grammar snowflake --count 50 --output queries.sql
 ```
 
 Execute generated queries against a local Postgres/Yugabyte instance:
@@ -197,15 +182,15 @@ Windows PowerShell (set DSN for the current session)
 
 ```powershell
 $env:PYRQG_DSN = "postgresql://postgres:postgres@localhost:5432/postgres"
-python -m pyrqg.runner grammar --grammar dml_unique --count 20 --echo-queries --execute
+python -m pyrqg.runner grammar --grammar ddl_focused --count 20 --execute
 ```
 
 Or pass DSN inline (any shell):
 
 ```bash
-python -m pyrqg.runner grammar --grammar dml_unique --count 20 \
+python -m pyrqg.runner grammar --grammar snowflake --count 20 \
   --dsn "postgresql://postgres:postgres@localhost:5432/postgres" \
-  --echo-queries --continue-on-error --print-errors
+  --errors-only --continue-on-error
 ```
 
 Run all grammars once each (initialize a basic default schema first):
@@ -213,7 +198,7 @@ Run all grammars once each (initialize a basic default schema first):
 ```bash
 python -m pyrqg.runner all --count 3 --init-schema \
   --dsn "postgresql://postgres:postgres@localhost:5432/postgres" \
-  --echo-queries --continue-on-error --print-errors
+  --errors-only --continue-on-error
 ```
 
 Generate complex DDL for N random tables and save to a file:
@@ -226,13 +211,13 @@ Generate a single random table DDL (with indexes) and execute it:
 
 ```bash
 python -m pyrqg.runner ddl --table tmp_users --num-columns 8 --num-constraints 3 \
-  --dsn "postgresql://postgres:postgres@localhost:5432/postgres" --execute --echo-queries
+  --dsn "postgresql://postgres:postgres@localhost:5432/postgres" --execute
 ```
 
 Deterministic generation with a seed (same seed → same queries):
 
 ```bash
-python -m pyrqg.runner grammar --grammar dml_unique --count 5 --seed 42
+python -m pyrqg.runner grammar --grammar snowflake --count 5 --seed 42
 ```
 
 ### Schema-Aware Generation (NEW)
@@ -349,25 +334,9 @@ Tips:
 
 ## Available Grammars
 
-### Core Grammars
-- `dml_unique` - DML with maximum uniqueness
-- `ddl_focused` - Complex DDL generation
-- `ddl_aux` - PostgreSQL functions and stored procedures
-- `advanced_query_patterns` - Complex query patterns
-- `postgresql15_types` - PostgreSQL 15 data types
-- `json_sql_pg15` - PostgreSQL 15 JSON/SQL features
-
-### Workload Grammars
-- `workload/insert_focused` - INSERT-heavy workload
-- `workload/update_focused` - UPDATE-heavy workload
-- `workload/delete_focused` - DELETE-heavy workload
-- `workload/select_focused` - SELECT with complex joins
-- `workload/upsert_focused` - INSERT ON CONFLICT patterns
-
-### YugabyteDB Grammars
-- `yugabyte/transactions_postgres` - Distributed transactions
-- `yugabyte/optimizer_subquery_portable` - Optimizer testing
-- `yugabyte/outer_join_portable` - Complex join patterns
+### Available Grammars
+- `ddl_focused` – emits complex PostgreSQL DDL for schema bootstrapping.
+- `snowflake` – generates simplified Snowflake SQL (USE, ALTER WAREHOUSE, aggregates).
 
 ## Performance
 

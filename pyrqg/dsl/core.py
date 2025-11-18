@@ -27,15 +27,16 @@ class Context:
     """Execution context for grammar generation"""
     tables: Dict[str, int] = field(default_factory=dict)  # table_name: row_count
     fields: List[str] = field(default_factory=list)
+    state: Dict[str, Any] = field(default_factory=dict)
     seed: Optional[int] = None
     _rng: Optional[random.Random] = None
-    
+
     def __post_init__(self):
         if self.seed is not None:
             self._rng = random.Random(self.seed)
         else:
             self._rng = random.Random()
-    
+
     @property
     def rng(self):
         return self._rng
@@ -312,14 +313,17 @@ class Grammar:
         """Generate output from a rule"""
         # Ensure all templates are properly initialized
         self._finalize_templates()
-        
+
         if seed is not None:
             self.context.seed = seed
             self.context._rng = random.Random(seed)
-        
+
+        # Reset per-generation state so grammars start fresh
+        self.context.state.clear()
+
         if rule_name not in self.rules:
             raise ValueError(f"Rule '{rule_name}' not found")
-        
+
         return self.rules[rule_name].generate(self.context)
     
     def _finalize_templates(self):
