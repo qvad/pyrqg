@@ -78,26 +78,23 @@ def _exec_statements(
             sql = stmt.strip()
             if not sql:
                 continue
-            # Split on semicolons to avoid batching errors
-            parts = [p.strip() for p in sql.split(';') if p.strip()]
-            for p in parts:
-                if trace_all:
-                    print(f"[SQL] {p}", file=trace_stream)
-                try:
-                    cur.execute(p)
-                    if track_rows and cur.description is not None:
-                        rows = cur.fetchall()
-                        total_rows += len(rows)
-                    ok += 1
-                except Exception as e:
-                    err += 1
-                    include_query = trace_all or log_errors
-                    error_stream = trace_stream if include_query else sys.stderr
-                    _print_error(str(e), p, stream=error_stream, include_query=include_query)
-                    if error_file is not None:
-                        _print_error(str(e), p, stream=error_file, include_query=True)
-                    if not continue_on_error:
-                        raise
+            if trace_all:
+                print(f"[SQL] {sql}", file=trace_stream)
+            try:
+                cur.execute(sql)
+                if track_rows and cur.description is not None:
+                    rows = cur.fetchall()
+                    total_rows += len(rows)
+                ok += 1
+            except Exception as e:
+                err += 1
+                include_query = trace_all or log_errors
+                error_stream = trace_stream if include_query else sys.stderr
+                _print_error(str(e), sql, stream=error_stream, include_query=include_query)
+                if error_file is not None:
+                    _print_error(str(e), sql, stream=error_file, include_query=True)
+                if not continue_on_error:
+                    raise
     return ok, err, total_rows
 
 
@@ -272,8 +269,8 @@ def action_ddl(rqg: RQG, args: argparse.Namespace) -> int:
     conn: Optional[PGConnection] = None
     try:
         if args.table:
-            ddl_sql = rqg.generate_random_table_ddl(args.table, args.num_columns, args.num_constraints)
-            ddls = [ddl_sql]
+            ddl_sqls = rqg.generate_random_table_ddl(args.table, args.num_columns, args.num_constraints)
+            ddls = ddl_sqls
         else:
             ddls = rqg.generate_complex_ddl(args.num_tables)
 
@@ -300,54 +297,48 @@ def action_ddl(rqg: RQG, args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="pyrqg.runner", description="PyRQG Runner")
-    p.add_argument("mode", nargs="?", default="list", choices=["list", "grammar", "all", "ddl"], help="Runner mode")
-    p.add_argument("--dsn", dest="dsn", default=None, help="PostgreSQL/Yugabyte DSN (env PYRQG_DSN also supported)")
-    p.add_argument("--continue-on-error", action="store_true", help="Do not stop on first error")
-    p.add_argument("--verbose", action="store_true", help="Trace every executed query to stdout")
-    p.add_argument("--log-errors", action="store_true", help="Trace only failing SQL statements")
-    p.add_argument("--execute", action="store_true", help="Execute statements even if --dsn not provided (uses env/default)")
-    p.add_argument("--error-log", default=None, help="Optional file to append failing SQL statements")
-    p.add_argument("--seed", type=int, default=None, help="Base seed for deterministic generation")
 
-    sub = {}
+    # Parent parser for shared arguments
+    parent_parser = argparse.ArgumentParser(add_help=False)
+    parent_parser.add_argument("--dsn", dest="dsn", default=None, help="PostgreSQL/Yugabyte DSN (env PYRQG_DSN also supported)")
+    parent_parser.add_argument("--continue-on-error", action="store_true", help="Do not stop on first error")
+    parent_parser.add_argument("--verbose", action="store_true", help="Trace every executed query to stdout")
+    parent_parser.add_argument("--log-errors", action="store_true", help="Trace only failing SQL statements")
+    parent_parser.add_argument("--execute", action="store_true", help="Execute statements even if --dsn not provided (uses env/default)")
+    parent_parser.add_argument("--error-log", default=None, help="Optional file to append failing SQL statements")
+    parent_parser.add_argument("--seed", type=int, default=None, help="Base seed for deterministic generation")
+
+    subparsers = p.add_subparsers(dest="mode", required=True)
+
+    # list
+    parser_list = subparsers.add_parser("list", help="List available grammars", parents=[parent_parser])
 
     # grammar
-    sp = argparse.ArgumentParser(add_help=False)
-    sp.add_argument("--grammar", required=False, help="Grammar name to run")
-    sp.add_argument("--count", type=int, default=100, help="Number of queries to generate/execute")
-    sp.add_argument("--output", default=None, help="Output file to write queries instead of executing/printing")
-    sub["grammar"] = sp
+    parser_grammar = subparsers.add_parser("grammar", help="Generate queries from a specific grammar", parents=[parent_parser])
+    parser_grammar.add_argument("--grammar", required=True, help="Grammar name to run")
+    parser_grammar.add_argument("--count", type=int, default=100, help="Number of queries to generate/execute")
+    parser_grammar.add_argument("--output", default=None, help="Output file to write queries instead of executing/printing")
 
     # all
-    sp = argparse.ArgumentParser(add_help=False)
-    sp.add_argument("--count", type=int, default=100, help="Number of queries per grammar")
-    sp.add_argument("--init-schema", action="store_true", help="Initialize a basic default schema before running")
-    sub["all"] = sp
+    parser_all = subparsers.add_parser("all", help="Run all grammars", parents=[parent_parser])
+    parser_all.add_argument("--count", type=int, default=100, help="Number of queries per grammar")
+    parser_all.add_argument("--init-schema", action="store_true", help="Initialize a basic default schema before running")
 
     # ddl
-    sp = argparse.ArgumentParser(add_help=False)
-    sp.add_argument("--num-tables", type=int, default=5, help="Number of tables for complex DDL mode")
-    sp.add_argument("--table", type=str, default=None, help="Generate a single random table DDL with this name")
-    sp.add_argument("--num-columns", type=int, default=None, help="Columns for single-table DDL")
-    sp.add_argument("--num-constraints", type=int, default=None, help="Constraints for single-table DDL")
-    sp.add_argument("--output", type=str, default=None, help="Write DDL to file instead of executing/printing")
-    sub["ddl"] = sp
+    parser_ddl = subparsers.add_parser("ddl", help="Generate or execute DDL", parents=[parent_parser])
+    parser_ddl.add_argument("--num-tables", type=int, default=5, help="Number of tables for complex DDL mode")
+    parser_ddl.add_argument("--table", type=str, default=None, help="Generate a single random table DDL with this name")
+    parser_ddl.add_argument("--num-columns", type=int, default=None, help="Columns for single-table DDL")
+    parser_ddl.add_argument("--num-constraints", type=int, default=None, help="Constraints for single-table DDL")
+    parser_ddl.add_argument("--output", type=str, default=None, help="Write DDL to file instead of executing/printing")
 
-    p.set_defaults(_subparsers=sub)
     return p
 
 
 def main(argv: Optional[List[str]] = None) -> int:
     argv = argv if argv is not None else sys.argv[1:]
     parser = build_parser()
-    args, unknown = parser.parse_known_args(argv)
-
-    # Merge in subcommand specific args
-    sub = args._subparsers.get(args.mode)
-    if sub is not None:
-        sub_args, _ = sub.parse_known_args(argv)
-        for k, v in vars(sub_args).items():
-            setattr(args, k, v)
+    args = parser.parse_args(argv)
 
     rqg = create_rqg()
 

@@ -32,7 +32,10 @@ class TestDDLGeneration:
         ddl = rqg.generate_ddl()
         assert ddl, "DDL generation should yield statements"
         blob = "\n".join(stmt.lower() for stmt in ddl)
-        assert "create table users" in blob
+        assert (
+            "create table users" in blob
+            or "create table if not exists users" in blob
+        )
 
 
 class TestRealWorkloadGrammar:

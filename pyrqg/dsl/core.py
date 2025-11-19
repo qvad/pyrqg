@@ -186,24 +186,31 @@ class Template(Element):
         values = {}
         for key, element in self.elements.items():
             values[key] = element.generate(context)
-        
+
         # Template substitution - handle both {key} and {key:rule} formats
         result = self.template
         import re
-        
+
         # Replace all placeholders
         def replacer(match):
             placeholder = match.group(1)
-            rule_name = match.group(2) if match.lastindex > 1 else None
-            
             # Use the generated value if available
             if placeholder in values:
                 return values[placeholder]
             # Otherwise return the original placeholder
             return match.group(0)
-        
+
         result = re.sub(r'\{([^:}]+)(?::([^}]+))?\}', replacer, result)
-        
+
+        # Check for any placeholders that were not resolved.
+        unresolved = re.findall(r'\{([^}]+)\}', result)
+        if unresolved:
+            grammar_name = self.grammar.name if self.grammar else "UNKNOWN"
+            raise ValueError(
+                f"Unresolved placeholders in template for grammar '{grammar_name}': {unresolved}\n"
+                f"Template: {self.template}"
+            )
+
         return result
 
 

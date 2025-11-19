@@ -4,6 +4,7 @@ PyRQG Library API - Simple interface for query generation
 
 import random
 from typing import Dict, List, Optional, Any
+import sys
 from dataclasses import dataclass, field
 
 # Use relative imports instead of path manipulation
@@ -345,20 +346,20 @@ class RQG:
         try:
             from grammars.ddl_focused import g as ddl
             self.grammars['ddl'] = ddl
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[WARN] Failed to load builtin grammar 'ddl_focused': {e}", file=sys.stderr)
 
         try:
             from grammars.real_workload import grammar as real_workload
             self.grammars['real_workload'] = real_workload
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[WARN] Failed to load builtin grammar 'real_workload': {e}", file=sys.stderr)
 
         try:
             from grammars.outer_join_portable import grammar as outer_join_portable
             self.grammars['outer_join_portable'] = outer_join_portable
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[WARN] Failed to load builtin grammar 'outer_join_portable': {e}", file=sys.stderr)
 
     def _load_plugin_grammars(self):
         """Load user-provided grammars from environment variable PYRQG_GRAMMARS.
@@ -384,11 +385,9 @@ class RQG:
                         i += 1
                     self.grammars[name] = getattr(module, 'g')
                 else:
-                    # silently ignore modules without `g` to avoid breaking env-based runs
-                    pass
-            except Exception:
-                # ignore plugin import errors to keep base functionality robust
-                pass
+                    print(f"[WARN] Grammar module '{module_path}' does not expose 'g'", file=sys.stderr)
+            except Exception as e:
+                print(f"[WARN] Failed to load plugin grammar module '{module_path}': {e}", file=sys.stderr)
     
     def add_table(self, table: TableMetadata):
         """Add a table definition"""
@@ -508,8 +507,12 @@ class RQG:
     
     def generate_random_table_ddl(self, table_name: str,
                                 num_columns: Optional[int] = None,
-                                num_constraints: Optional[int] = None) -> str:
-        """Generate DDL for a single random table with complex constraints"""
+                                num_constraints: Optional[int] = None) -> List[str]:
+        """Generate DDL statements for a single random table with constraints.
+
+        Returns a list of individual SQL statements rather than a single
+        concatenated string. This makes downstream execution more robust.
+        """
         table_def = self.ddl_generator.generate_random_table(
             table_name, num_columns, num_constraints
         )
@@ -520,8 +523,7 @@ class RQG:
             ddl_statements.append(
                 self.ddl_generator.generate_create_index(table_name, index)
             )
-        
-        return ";\n".join(ddl_statements)
+        return ddl_statements
     
     def list_grammars(self) -> Dict[str, str]:
         """List all available grammars with descriptions"""

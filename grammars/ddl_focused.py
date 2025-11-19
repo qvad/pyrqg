@@ -3,9 +3,9 @@ DDL-focused Grammar for PyRQG
 Generates complex CREATE TABLE, ALTER TABLE, and INDEX statements
 """
 
-from pyrqg.dsl.core import Grammar, Choice, Template, Lambda, Optional
+from pyrqg.dsl.core import Grammar, Choice, Template, Lambda, ref
 from pyrqg.schema_support import get_schema_catalog
-import time
+import uuid
 
 # Create the grammar
 g = Grammar()
@@ -67,7 +67,7 @@ g.rule("query", Choice(
 ))
 
 # Table names with uniqueness
-g.rule("table_name", Lambda(lambda ctx: f"table_{ctx.rng.randint(1, 100)}_{int(time.time() * 1000) % 100000}"))
+g.rule("table_name", Lambda(lambda ctx: f"table_{str(uuid.uuid4()).replace('-', '')[:12]}"))
 g.rule("existing_table", _table_rule)
 
 g.rule("existing_column", _existing_column)
@@ -147,7 +147,7 @@ g.rule("add_constraint", Choice(
     Template("ALTER TABLE {existing_table} ADD CONSTRAINT {constraint_name} CHECK ({existing_numeric_column} > {existing_numeric_column2:existing_numeric_column})"),
 ))
 
-g.rule("constraint_name", Lambda(lambda ctx: f"constraint_{ctx.rng.randint(1000, 9999)}_{int(time.time() * 1000) % 100000}"))
+g.rule("constraint_name", Lambda(lambda ctx: f"constraint_{str(uuid.uuid4()).replace('-', '')[:12]}"))
 
 g.rule("add_foreign_key", Template(
     "ALTER TABLE {existing_table} ADD CONSTRAINT {constraint_name} " +
@@ -180,7 +180,7 @@ g.rule("create_unique_index", Template(
     "CREATE UNIQUE INDEX {index_name} ON {existing_table} ({index_columns}) {index_options}"
 ))
 
-g.rule("index_name", Lambda(lambda ctx: f"idx_{ctx.rng.randint(1000, 9999)}_{int(time.time() * 1000) % 100000}"))
+g.rule("index_name", Lambda(lambda ctx: f"idx_{str(uuid.uuid4()).replace('-', '')[:12]}"))
 
 g.rule("index_columns", Choice(
     Template("{existing_column}"),
@@ -189,7 +189,6 @@ g.rule("index_columns", Choice(
     Template("{existing_column}, {existing_column2:existing_column}, {existing_column3:existing_column}")
 ))
 
-from pyrqg.dsl.core import ref
 g.rule("index_options", Choice(
     "",  # default btree
     Template("WHERE {col} IS NOT NULL", col=ref('existing_column')),
@@ -209,7 +208,7 @@ FROM {existing_table}
 WHERE {existing_column} IS NOT NULL
 GROUP BY {existing_column}, {existing_column2:existing_column}"""))
 
-g.rule("view_suffix", Lambda(lambda ctx: f"{ctx.rng.randint(100, 999)}_{int(time.time() * 1000) % 10000}"))
+g.rule("view_suffix", Lambda(lambda ctx: f"{str(uuid.uuid4()).replace('-', '')[:8]}"))
 
 # Table with partitioning
 g.rule("create_partitioned_table", Template("""CREATE TABLE {table_name} (
