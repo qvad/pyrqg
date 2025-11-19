@@ -7,7 +7,8 @@ from pyrqg.dsl.core import Grammar
 
 CORE_GRAMMARS = [
     "ddl_focused",
-    "snowflake",
+    "real_workload",
+    "outer_join_portable",
 ]
 
 
@@ -34,9 +35,17 @@ class TestDDLGeneration:
         assert "create table users" in blob
 
 
-class TestSnowflakeGrammar:
-    def test_includes_snowflake_statements(self) -> None:
-        grammar = load_grammar("snowflake")
+class TestRealWorkloadGrammar:
+    def test_emits_orders_and_revenue_queries(self) -> None:
+        grammar = load_grammar("real_workload")
         queries = [grammar.generate("query", seed=i) for i in range(10)]
-        assert any("ALTER WAREHOUSE" in q for q in queries)
-        assert any("USE DATABASE" in q for q in queries)
+        assert any("FROM orders" in q for q in queries)
+        assert any("FROM revenue" in q for q in queries)
+
+
+class TestOuterJoinPortableGrammar:
+    def test_generates_outer_join_queries(self) -> None:
+        grammar = load_grammar("outer_join_portable")
+        queries = [grammar.generate("query", seed=i) for i in range(6)]
+        assert any("OUTER JOIN" in q for q in queries)
+        assert any("GROUP BY" in q or "HAVING" in q for q in queries)

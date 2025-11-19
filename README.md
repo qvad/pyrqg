@@ -44,8 +44,11 @@ python -m pyrqg.runner ddl --num-tables 5 --seed 42 --output schema.sql
 # Generate a single random table with random PK, indexes and properties
 python -m pyrqg.runner ddl --table demo --num-columns 8 --num-constraints 4 --seed 7
 
-# Generate 100 queries from the Snowflake grammar
-python -m pyrqg.runner grammar --grammar snowflake --count 100 --seed 123 --output queries.sql
+# Generate 100 queries from the real_workload grammar
+python -m pyrqg.runner grammar --grammar real_workload --count 100 --seed 123 --output queries.sql
+
+# Stress portable multi-table outer joins
+python -m pyrqg.runner grammar --grammar outer_join_portable --count 25 --seed 42
 
 # Execute generated queries by applying them with psql
 # Example: generate DDL to file and apply to a running database
@@ -53,7 +56,7 @@ python -m pyrqg.runner grammar --grammar ddl_focused --count 100 --output schema
 psql "postgresql://postgres:password@localhost:5432/postgres" -f schema.sql
 ```
 
-Tip: pass `--errors-only` when running `pyrqg.runner` to emit just the failing SQL statements (they go to stdout). Combine it with `--error-log path/to/file` if you want to capture every failure in a log without echoing successful queries.
+Tip: pass `--log-errors` when running `pyrqg.runner` to emit just the failing SQL statements (they go to stdout). Combine it with `--error-log path/to/file` if you want to capture every failure in a log without echoing successful queries. Use `--verbose` if you want to see every statement as it executes.
 
 ### Local Database (PostgreSQL) - Quick Launch
 
@@ -128,7 +131,7 @@ Run PyRQG against YugabyteDB and apply queries with psql:
 
 ```bash
 # Generate queries to a file, then apply with psql (YugabyteDB listens on 5433)
-python -m pyrqg.runner grammar --grammar snowflake --count 50 --output queries.sql
+python -m pyrqg.runner grammar --grammar real_workload --count 50 --output queries.sql
 psql "postgresql://postgres:password@localhost:5433/postgres" -f queries.sql
 ```
 
@@ -146,7 +149,7 @@ from pyrqg.api import create_rqg
 rqg = create_rqg()
 
 # Generate queries from grammar
-queries = rqg.generate_from_grammar('snowflake', count=10)
+queries = rqg.generate_from_grammar('real_workload', count=10)
 for query in queries:
     print(query)
 
@@ -167,13 +170,13 @@ python -m pyrqg.runner list
 Generate queries from a specific grammar and print to console:
 
 ```bash
-python -m pyrqg.runner grammar --grammar snowflake --count 5
+python -m pyrqg.runner grammar --grammar real_workload --count 5
 ```
 
 Generate queries and save to a file (no execution):
 
 ```bash
-python -m pyrqg.runner grammar --grammar snowflake --count 50 --output queries.sql
+python -m pyrqg.runner grammar --grammar real_workload --count 50 --output queries.sql
 ```
 
 Execute generated queries against a local Postgres/Yugabyte instance:
@@ -188,9 +191,9 @@ python -m pyrqg.runner grammar --grammar ddl_focused --count 20 --execute
 Or pass DSN inline (any shell):
 
 ```bash
-python -m pyrqg.runner grammar --grammar snowflake --count 20 \
+python -m pyrqg.runner grammar --grammar real_workload --count 20 \
   --dsn "postgresql://postgres:postgres@localhost:5432/postgres" \
-  --errors-only --continue-on-error
+  --log-errors --continue-on-error
 ```
 
 Run all grammars once each (initialize a basic default schema first):
@@ -198,7 +201,7 @@ Run all grammars once each (initialize a basic default schema first):
 ```bash
 python -m pyrqg.runner all --count 3 --init-schema \
   --dsn "postgresql://postgres:postgres@localhost:5432/postgres" \
-  --errors-only --continue-on-error
+  --log-errors --continue-on-error
 ```
 
 Generate complex DDL for N random tables and save to a file:
@@ -217,7 +220,7 @@ python -m pyrqg.runner ddl --table tmp_users --num-columns 8 --num-constraints 3
 Deterministic generation with a seed (same seed → same queries):
 
 ```bash
-python -m pyrqg.runner grammar --grammar snowflake --count 5 --seed 42
+python -m pyrqg.runner grammar --grammar real_workload --count 5 --seed 42
 ```
 
 ### Schema-Aware Generation (NEW)
@@ -336,7 +339,8 @@ Tips:
 
 ### Available Grammars
 - `ddl_focused` – emits complex PostgreSQL DDL for schema bootstrapping.
-- `snowflake` – generates simplified Snowflake SQL (USE, ALTER WAREHOUSE, aggregates).
+- `real_workload` – generates simplified analytics queries (orders/revenue CTEs).
+- `outer_join_portable` – emits portable multi-table outer joins with aggregates.
 
 ## Performance
 

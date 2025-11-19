@@ -349,8 +349,14 @@ class RQG:
             pass
 
         try:
-            from grammars.snowflake import grammar as snowflake
-            self.grammars['snowflake'] = snowflake
+            from grammars.real_workload import grammar as real_workload
+            self.grammars['real_workload'] = real_workload
+        except Exception:
+            pass
+
+        try:
+            from grammars.outer_join_portable import grammar as outer_join_portable
+            self.grammars['outer_join_portable'] = outer_join_portable
         except Exception:
             pass
 
@@ -521,7 +527,8 @@ class RQG:
         """List all available grammars with descriptions"""
         descriptions = {
             'ddl': 'Complex PostgreSQL DDL statements',
-            'snowflake': 'Simplified Snowflake workload',
+            'real_workload': 'Simplified real-world analytics workload',
+            'outer_join_portable': 'Portable multi-table outer join workload',
         }
         return {name: descriptions.get(name, 'Custom grammar') 
                 for name in self.grammars.keys()}
