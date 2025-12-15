@@ -1,0 +1,83 @@
+version: '3.8'
+
+services:
+  # postgres:
+  #   image: postgres:15-alpine
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         memory: 1G
+  #   environment:
+  #     POSTGRES_DB: testdb
+  #     POSTGRES_USER: testuser
+  #     POSTGRES_PASSWORD: testpass
+  #     POSTGRES_HOST_AUTH_METHOD: trust
+  #   ports:
+  #     - "5432:5432"
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U testuser -d testdb"]
+  #     interval: 5s
+  #     timeout: 5s
+  #     retries: 5
+  #   volumes:
+  #     - ./test/sql/init-postgres.sql:/docker-entrypoint-initdb.d/init.sql
+  #   tmpfs:
+  #     - /var/lib/postgresql/data
+
+  yugabytedb:
+    image: yugabytedb/yugabyte:2025.2.0.0-b131
+    deploy:
+      resources:
+        limits:
+          memory: 12G # Increased to 12GB to prevent OOM
+    ulimits:
+      nproc: 65535
+      nofile:
+        soft: 65535
+        hard: 65535
+    cap_add:
+      - SYS_NICE
+      - SYS_RESOURCE
+    command: |
+      bash -c "
+      # Clean up any old PID files and ensure data directory exists
+      rm -f /tmp/yb_data/yugabyted.pid
+      mkdir -p /tmp/yb_data/logs
+      # Start yugabyted in foreground
+      # Explicitly limit TServer and Master memory usage. 
+      # TServer: ~4GB hard limit. Master: ~512MB hard limit.
+      # Remaining RAM (of 12GB container limit) is for OS, caching, and safety buffer.
+      exec /home/yugabyte/bin/yugabyted start --daemon=false --base_dir=/tmp/yb_data --listen=0.0.0.0 --tserver_flags='pgsql_proxy_bind_address=0.0.0.0:5433,yb_num_shards_per_tserver=1,ysql_max_connections=20,memory_limit_hard_bytes=4294967296,max_clock_skew_usec=5000000' --master_flags='memory_limit_hard_bytes=536870912,max_clock_skew_usec=5000000'
+      "
+    ports:
+      - "5433:5433"
+    healthcheck:
+      test: ["CMD-SHELL", "/home/yugabyte/bin/ysqlsh -h localhost -p 5433 -U yugabyte -d yugabyte -c 'SELECT 1'"]
+      interval: 10s
+      timeout: 15s
+      retries: 30
+    volumes:
+      - yb_data_volume:/tmp/yb_data
+
+  pyrqg-runner:
+    build:
+      context: .
+      dockerfile: test/Dockerfile.integration
+    depends_on:
+      # postgres:
+      #   condition: service_healthy
+      yugabytedb:
+        condition: service_healthy
+    environment:
+      PYTHONUNBUFFERED: 1
+      # POSTGRES_DSN: "postgresql://testuser:testpass@postgres:5432/testdb"
+      # YUGABYTE_DSN: "postgresql://yugabyte:yugabyte@yugabytedb:5433/testdb"
+      PYRQG_DSN: "postgresql://yugabyte:yugabyte@yugabytedb:5433/yugabyte"
+    volumes:
+      - .:/app
+    working_dir: /app
+    # Command to run PyRQG tests
+    command: ["pytest", "-s", "tests/test_load.py"]
+
+volumes:
+  yb_data_volume:

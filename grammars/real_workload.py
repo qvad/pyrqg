@@ -66,15 +66,129 @@ def _get_tables(ctx):
         return state['tables_cache']
     return {}
 
+def _random_id():
+    return str(uuid.uuid4()).replace('-', '')[:8]
+
 def _pick_table(ctx):
     tables = _get_tables(ctx)
     if not tables: return None
     return ctx.rng.choice(list(tables.keys()))
 
-# =============================================================================
-# 2. Recursive Expression Generator (The Core)
-# =============================================================================
-# ... (Expression generation logic remains same, skipping for brevity) ...
+def _gen_expr(ctx, available_cols, depth=0, desired_type=None):
+    """
+    Recursively generates a valid SQL expression.
+    available_cols: dict of {col_name: type} available in current scope
+    """
+    rng = ctx.rng
+    
+    # Base case: deeper than limit or random stop
+    if depth > 3 or (depth > 0 and rng.random() < 0.4):
+        # Try to find a column matching desired type
+        if available_cols and rng.random() < 0.7:
+            if desired_type:
+                candidates = []
+                for c, t in available_cols.items():
+                    if t == desired_type: candidates.append(c)
+                    elif desired_type == 'NUM' and t in NUMERIC_TYPES: candidates.append(c)
+                    elif desired_type == 'STR' and t in STRING_TYPES: candidates.append(c)
+                    elif desired_type == 'BOOL' and t == 'BOOLEAN': candidates.append(c)
+                
+                if candidates: return rng.choice(candidates)
+            else:
+                return rng.choice(list(available_cols.keys()))
+        
+        # Fallback to Literal (Safer values)
+        if not desired_type or desired_type in NUMERIC_TYPES or desired_type == 'NUM': 
+            return str(rng.randint(1, 100)) # Avoid 0 to help with division
+        if desired_type in STRING_TYPES or desired_type == 'STR': 
+            return f"'{_random_id()}'"
+        if desired_type == 'BOOLEAN' or desired_type == 'BOOL': 
+            return rng.choice(['TRUE', 'FALSE'])
+        if desired_type in DATETIME_TYPES:
+            return f"(NOW() - interval '{rng.randint(0, 365)} days')"
+        if '[]' in str(desired_type):
+             return "ARRAY[1, 2]" # Simple default for arrays
+        return "NULL"
+
+    # Determine type of expression to generate
+    # If no desired type, pick one concrete type to enforce consistency
+    op_type = desired_type if desired_type else rng.choice(ALL_TYPES)
+    
+    # --- Advanced Control Flow ---
+    # CASE WHEN (10% chance)
+    if rng.random() < 0.1:
+        cond = _gen_expr(ctx, available_cols, depth+1, 'BOOLEAN')
+        val1 = _gen_expr(ctx, available_cols, depth+1, op_type)
+        val2 = _gen_expr(ctx, available_cols, depth+1, op_type)
+        return f"(CASE WHEN {cond} THEN {val1} ELSE {val2} END)"
+
+    # --- Numeric Logic ---
+    if op_type in NUMERIC_TYPES or op_type == 'NUM':
+        op = rng.choice(['+', '-', '*', '/', '%'])
+        
+        # Strict Integer Arithmetic for Modulo
+        if op == '%' or op_type == 'INTEGER' or op_type == 'BIGINT':
+            left = _gen_expr(ctx, available_cols, depth+1, 'INTEGER')
+            right = _gen_expr(ctx, available_cols, depth+1, 'INTEGER')
+            
+            # Safe Division/Modulo
+            if op in ('%', '/'):
+                return f"({left} {op} NULLIF({right}, 0))"
+            return f"({left} {op} {right})"
+            
+        # General Numeric
+        left = _gen_expr(ctx, available_cols, depth+1, 'NUM')
+        right = _gen_expr(ctx, available_cols, depth+1, 'NUM')
+        
+        if op in ('/', '%'):
+             return f"({left} {op} NULLIF({right}, 0))"
+        return f"({left} {op} {right})"
+    
+    # --- String Logic ---
+    if op_type in STRING_TYPES or op_type == 'STR':
+        if rng.random() < 0.5:
+            # Concatenation
+            left = _gen_expr(ctx, available_cols, depth+1, 'STR')
+            right = _gen_expr(ctx, available_cols, depth+1, 'STR')
+            return f"({left} || {right})"
+        else:
+            # String Functions
+            func = rng.choice(['LOWER', 'UPPER', 'TRIM', 'MD5'])
+            arg = _gen_expr(ctx, available_cols, depth+1, 'STR')
+            return f"{func}({arg})"
+
+    # --- Boolean Logic ---
+    if op_type == 'BOOLEAN' or op_type == 'BOOL':
+        subtype = rng.choice(['NUM', 'STR', 'BOOL', 'NULL_CHECK'])
+        
+        if subtype == 'NULL_CHECK':
+            target_type = rng.choice(['NUM', 'STR', 'BOOL'])
+            target = _gen_expr(ctx, available_cols, depth+1, target_type)
+            op = rng.choice(['IS NULL', 'IS NOT NULL'])
+            return f"({target} {op})"
+
+        if subtype == 'NUM':
+            op = rng.choice(['=', '<>', '>', '<', '>=', '<='])
+            left = _gen_expr(ctx, available_cols, depth+1, 'NUM')
+            right = _gen_expr(ctx, available_cols, depth+1, 'NUM')
+            return f"({left} {op} {right})"
+
+        if subtype == 'STR':
+            # Simplified pattern matching to avoid regexp errors
+            left = _gen_expr(ctx, available_cols, depth+1, 'STR')
+            if rng.random() < 0.3:
+                return f"({left} LIKE '%{rng.choice(['a','e','i'])}%')"
+            right = _gen_expr(ctx, available_cols, depth+1, 'STR')
+            return f"({left} = {right})"
+
+        if subtype == 'BOOL':
+            op = rng.choice(['AND', 'OR'])
+            left = _gen_expr(ctx, available_cols, depth+1, 'BOOL')
+            right = _gen_expr(ctx, available_cols, depth+1, 'BOOL')
+            return f"({left} {op} {right})"
+
+    # Fallback: strictly typed Coalesce
+    return f"COALESCE({_gen_expr(ctx, available_cols, depth+1, op_type)}, {_gen_expr(ctx, available_cols, depth+1, op_type)})"
 
 # =============================================================================
 # 3. Complex DDL Generator
