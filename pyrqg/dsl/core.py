@@ -40,6 +40,36 @@ class Context:
     @property
     def rng(self):
         return self._rng
+    
+    def get_table(self, min_rows: Optional[int] = None, max_rows: Optional[int] = None) -> str:
+        """Get a table name matching constraints"""
+        eligible_tables = []
+        for table, rows in self.tables.items():
+            if min_rows is not None and rows < min_rows:
+                continue
+            if max_rows is not None and rows > max_rows:
+                continue
+            eligible_tables.append(table)
+        
+        if not eligible_tables:
+            # Fallback if no tables match or tables dict is empty but keys exist
+            if self.tables:
+                eligible_tables = list(self.tables.keys())
+            else:
+                return "table1"
+        
+        return self.rng.choice(eligible_tables)
+
+    def get_field(self, type: Optional[str] = None, table: Optional[str] = None) -> str:
+        """Get a field name matching constraints"""
+        # In the simple Context, we ignore 'table' as fields are global list
+        if type:
+            # Filter fields by type (simple substring match)
+            matching = [f for f in self.fields if type in f]
+            if matching:
+                return self.rng.choice(matching)
+        
+        return self.rng.choice(self.fields) if self.fields else "col1"
 
 
 # ============================================================================
@@ -84,32 +114,17 @@ class Table(Element):
         self.max_rows = max_rows
     
     def generate(self, context: Context) -> str:
-        eligible_tables = []
-        for table, rows in context.tables.items():
-            if self.min_rows is not None and rows < self.min_rows:
-                continue
-            if self.max_rows is not None and rows > self.max_rows:
-                continue
-            eligible_tables.append(table)
-        
-        if not eligible_tables:
-            eligible_tables = list(context.tables.keys())
-        
-        return context.rng.choice(eligible_tables) if eligible_tables else "table1"
+        return context.get_table(min_rows=self.min_rows, max_rows=self.max_rows)
 
 
 class Field(Element):
     """Random field name from context"""
-    def __init__(self, type: Optional[str] = None):
+    def __init__(self, type: Optional[str] = None, table: Optional[str] = None):
         self.type = type
+        self.table = table
     
     def generate(self, context: Context) -> str:
-        if self.type:
-            # Filter fields by type
-            matching = [f for f in context.fields if self.type in f]
-            if matching:
-                return context.rng.choice(matching)
-        return context.rng.choice(context.fields) if context.fields else "col1"
+        return context.get_field(type=self.type, table=self.table)
 
 
 class Number(Element):
@@ -191,6 +206,12 @@ class Template(Element):
         result = self.template
         import re
 
+        # Regex to match placeholders {key} or {key:rule}, but NOT {{key}}
+        # Matches: { followed by non-{}: chars, optional :rule, ending with }
+        # Negative lookbehind (?<!\{) ensures not preceded by {
+        # Negative lookahead (?!\}) ensures not followed by }
+        pattern = r'(?<!\{)\{([^{}:]+)(?::([^{}]+))?\}(?!\})'
+
         # Replace all placeholders
         def replacer(match):
             placeholder = match.group(1)
@@ -200,16 +221,19 @@ class Template(Element):
             # Otherwise return the original placeholder
             return match.group(0)
 
-        result = re.sub(r'\{([^:}]+)(?::([^}]+))?\}', replacer, result)
+        result = re.sub(pattern, replacer, result)
 
         # Check for any placeholders that were not resolved.
-        unresolved = re.findall(r'\{([^}]+)\}', result)
+        unresolved = re.findall(pattern, result)
         if unresolved:
             grammar_name = self.grammar.name if self.grammar else "UNKNOWN"
             raise ValueError(
                 f"Unresolved placeholders in template for grammar '{grammar_name}': {unresolved}\n"
                 f"Template: {self.template}"
             )
+            
+        # Unescape braces: {{ -> {, }} -> }
+        result = result.replace("{{", "{").replace("}}", "}")
 
         return result
 
@@ -316,22 +340,30 @@ class Grammar:
             for elem in element.elements.values():
                 self._set_grammar_refs(elem)
     
-    def generate(self, rule_name: str = "query", seed: Optional[int] = None) -> str:
+    def generate(self, rule_name: str = "query", seed: Optional[int] = None, context: Any = None) -> str:
         """Generate output from a rule"""
         # Ensure all templates are properly initialized
         self._finalize_templates()
+        
+        ctx = context if context is not None else self.context
 
         if seed is not None:
-            self.context.seed = seed
-            self.context._rng = random.Random(seed)
+            ctx.seed = seed
+            # Handle different context implementations
+            if hasattr(ctx, '_rng'):
+                ctx._rng = random.Random(seed)
+            elif hasattr(ctx, 'rng'):
+                # SchemaAwareContext or other implementations
+                ctx.rng = random.Random(seed)
 
         # Reset per-generation state so grammars start fresh
-        self.context.state.clear()
+        if hasattr(ctx, 'state'):
+            ctx.state.clear()
 
         if rule_name not in self.rules:
             raise ValueError(f"Rule '{rule_name}' not found")
 
-        return self.rules[rule_name].generate(self.context)
+        return self.rules[rule_name].generate(ctx)
     
     def _finalize_templates(self):
         """Finalize all templates to ensure placeholders are resolved"""
@@ -388,9 +420,9 @@ def table(min_rows=None, max_rows=None):
     """Create a table reference"""
     return Table(min_rows, max_rows)
 
-def field(type=None):
+def field(type=None, table=None):
     """Create a field reference"""
-    return Field(type)
+    return Field(type, table)
 
 def number(min=0, max=100):
     """Create a number"""
@@ -408,8 +440,9 @@ def ref(rule_name):
 def parse_template(template_str, grammar):
     """Parse template string and extract placeholders"""
     import re
-    # Match {placeholder} or {placeholder:rule_name}
-    pattern = r'\{([^:}]+)(?::([^}]+))?\}'
+    # Match {placeholder} or {placeholder:rule_name}, but NOT {{placeholder}}
+    # Use same pattern as generate()
+    pattern = r'(?<!\{)\{([^{}:]+)(?::([^{}]+))?\}(?!\})'
     placeholders = re.findall(pattern, template_str)
     
     elements = {}

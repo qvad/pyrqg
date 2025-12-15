@@ -28,6 +28,7 @@ class TableMetadata:
     primary_key: Optional[str] = None
     unique_columns: List[str] = field(default_factory=list)
     foreign_keys: Dict[str, str] = field(default_factory=dict)  # column -> table.column
+    row_count: int = 0
 
 
 class SchemaAwareContext:
@@ -37,6 +38,8 @@ class SchemaAwareContext:
         self.conn = psycopg2.connect(connection_string)
         self.rng = random.Random(seed)
         self.tables: Dict[str, TableMetadata] = {}
+        self.state: Dict[str, Any] = {}  # For compatibility with Grammar.generate
+        self.fields: List[str] = []      # For compatibility with generic Context
         self.type_generators = self._init_type_generators()
         self._load_complete_schema()
     
@@ -92,19 +95,24 @@ class SchemaAwareContext:
         # Set search path
         cur.execute("SET search_path TO pyrqg, public")
         
-        # Get all tables
+        # Get all tables with row counts from pyrqg or public schemas
         cur.execute("""
-            SELECT table_name 
-            FROM information_schema.tables 
-            WHERE table_schema = 'pyrqg' 
-            AND table_type = 'BASE TABLE'
-            AND table_name NOT LIKE '%pkey%'
+            SELECT t.table_name, c.reltuples::bigint, t.table_schema
+            FROM information_schema.tables t
+            JOIN pg_class c ON c.relname = t.table_name
+            JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = t.table_schema
+            WHERE t.table_schema IN ('pyrqg', 'public')
+            AND t.table_type = 'BASE TABLE'
+            AND t.table_name NOT LIKE '%pkey%'
         """)
         
-        tables = [row[0] for row in cur.fetchall()]
+        tables_info = cur.fetchall()
         
-        for table in tables:
-            table_meta = TableMetadata(name=table, columns={})
+        for table_name, row_count, table_schema in tables_info:
+            # Handle case where reltuples is -1 or None
+            estimated_rows = row_count if row_count and row_count >= 0 else 0
+            
+            table_meta = TableMetadata(name=table_name, columns={}, row_count=estimated_rows)
             
             # Get columns with full metadata
             cur.execute("""
@@ -127,7 +135,7 @@ class SchemaAwareContext:
                     FROM information_schema.table_constraints tc
                     JOIN information_schema.key_column_usage kcu
                         ON tc.constraint_name = kcu.constraint_name
-                    WHERE tc.table_schema = 'pyrqg'
+                    WHERE tc.table_schema = %s
                     AND tc.table_name = %s
                     AND tc.constraint_type = 'PRIMARY KEY'
                 ) pk ON c.column_name = pk.column_name
@@ -136,14 +144,14 @@ class SchemaAwareContext:
                     FROM information_schema.table_constraints tc
                     JOIN information_schema.key_column_usage kcu
                         ON tc.constraint_name = kcu.constraint_name
-                    WHERE tc.table_schema = 'pyrqg'
+                    WHERE tc.table_schema = %s
                     AND tc.table_name = %s
                     AND tc.constraint_type = 'UNIQUE'
                 ) uc ON c.column_name = uc.column_name
-                WHERE c.table_schema = 'pyrqg'
+                WHERE c.table_schema = %s
                 AND c.table_name = %s
                 ORDER BY c.ordinal_position
-            """, (table, table, table))
+            """, (table_schema, table_name, table_schema, table_name, table_schema, table_name))
             
             for row in cur.fetchall():
                 col_meta = ColumnMetadata(
@@ -161,29 +169,71 @@ class SchemaAwareContext:
                 if col_meta.is_unique:
                     table_meta.unique_columns.append(col_meta.name)
             
-            self.tables[table] = table_meta
+            self.tables[table_name] = table_meta
         
         cur.close()
     
-    def get_table(self, prefer_tables: Optional[List[str]] = None) -> str:
-        """Get a random table, preferring certain tables"""
-        if prefer_tables:
-            valid_tables = [t for t in prefer_tables if t in self.tables]
-            if valid_tables:
-                return self.rng.choice(valid_tables)
+    def get_table(self, min_rows: Optional[int] = None, max_rows: Optional[int] = None, prefer_tables: Optional[List[str]] = None) -> str:
+        """Get a random table, matching constraints and preferring certain tables"""
+        candidate_tables = list(self.tables.keys())
         
-        # Default to common workload tables
+        # Filter by row count if stats are available
+        if min_rows is not None:
+            candidate_tables = [t for t in candidate_tables if self.tables[t].row_count >= min_rows]
+        if max_rows is not None:
+            candidate_tables = [t for t in candidate_tables if self.tables[t].row_count <= max_rows]
+            
+        if not candidate_tables:
+            # Relax constraints if no tables match
+            candidate_tables = list(self.tables.keys())
+
+        if prefer_tables:
+            valid_preferred = [t for t in prefer_tables if t in candidate_tables]
+            if valid_preferred:
+                return self.rng.choice(valid_preferred)
+        
+        # Default to common workload tables if they are in the candidate list
         workload_tables = [
             'users', 'products', 'orders', 'inventory', 'transactions',
             'sessions', 'customers', 'employees', 'accounts', 'logs'
         ]
-        valid_tables = [t for t in workload_tables if t in self.tables]
+        valid_common = [t for t in workload_tables if t in candidate_tables]
         
-        if valid_tables:
-            return self.rng.choice(valid_tables)
+        if valid_common:
+            return self.rng.choice(valid_common)
         
-        # Fallback to any table
-        return self.rng.choice(list(self.tables.keys()))
+        if candidate_tables:
+            return self.rng.choice(candidate_tables)
+            
+        # Absolute fallback
+        return "table1"
+
+    def get_field(self, type: Optional[str] = None, table: Optional[str] = None) -> str:
+        """Get a field name matching constraints"""
+        if table:
+            # If table is specified, look up columns in that table
+            if table in self.tables:
+                columns = list(self.tables[table].columns.values())
+                if type:
+                    columns = [c for c in columns if type in c.data_type.lower()]
+                
+                if columns:
+                    return self.rng.choice([c.name for c in columns])
+            # Fallback if table not found or no matching columns
+            return "col1"
+        
+        # If no table specified, pick a random table and find a column
+        # This is a bit inefficient but satisfies the interface
+        if self.tables:
+            random_table = self.rng.choice(list(self.tables.values()))
+            columns = list(random_table.columns.values())
+            if type:
+                columns = [c for c in columns if type in c.data_type.lower()]
+            
+            if columns:
+                return self.rng.choice([c.name for c in columns])
+                
+        return "col1"
     
     def get_columns_for_insert(self, table: str, count: Optional[int] = None) -> List[str]:
         """Get valid columns for INSERT (excluding auto-generated)"""

@@ -13,43 +13,26 @@ from .core import (
     number,
     Lambda,
     Literal,
+    Table,
+    Field,
 )
 
 
 # -------------------------- Identifiers --------------------------
 
 def common_table_names(names=None):
-    names = names or [
-        "users",
-        "orders",
-        "products",
-        "inventory",
-        "transactions",
-        "logs",
-    ]
-    return choice(*names)
+    """Return a Table element that resolves at runtime via Context"""
+    return Table()
 
 
 def common_column_names(names=None):
-    names = names or [
-        "id",
-        "user_id",
-        "product_id",
-        "name",
-        "email",
-        "status",
-        "quantity",
-        "price",
-        "total",
-        "created_at",
-        "updated_at",
-    ]
-    return choice(*names)
+    """Return a Field element that resolves at runtime via Context"""
+    return Field()
 
 
 def unique_columns(names=None):
-    names = names or ["id", "email", "product_id", "user_id"]
-    return choice(*names)
+    """Return a Field element prioritizing ID/unique columns"""
+    return Field(type="id")
 
 
 def alias_names():

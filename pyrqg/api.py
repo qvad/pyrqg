@@ -3,7 +3,7 @@ PyRQG Library API - Simple interface for query generation
 """
 
 import random
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Iterator
 import sys
 from dataclasses import dataclass, field
 
@@ -355,11 +355,6 @@ class RQG:
         except Exception as e:
             print(f"[WARN] Failed to load builtin grammar 'real_workload': {e}", file=sys.stderr)
 
-        try:
-            from grammars.outer_join_portable import grammar as outer_join_portable
-            self.grammars['outer_join_portable'] = outer_join_portable
-        except Exception as e:
-            print(f"[WARN] Failed to load builtin grammar 'outer_join_portable': {e}", file=sys.stderr)
 
     def _load_plugin_grammars(self):
         """Load user-provided grammars from environment variable PYRQG_GRAMMARS.
@@ -530,7 +525,6 @@ class RQG:
         descriptions = {
             'ddl': 'Complex PostgreSQL DDL statements',
             'real_workload': 'Simplified real-world analytics workload',
-            'outer_join_portable': 'Portable multi-table outer join workload',
         }
         return {name: descriptions.get(name, 'Custom grammar') 
                 for name in self.grammars.keys()}
@@ -552,7 +546,8 @@ class RQG:
             raise ValueError(f"No grammar 'g' found in {file_path}")
     
     def generate_from_grammar(self, grammar_name: str, rule: str = "query", 
-                            count: int = 1, seed: Optional[int] = None) -> List[str]:
+                            count: int = 1, seed: Optional[int] = None, 
+                            context: Any = None) -> Iterator[str]:
         """Generate queries from a grammar.
         
         New: Supports path-style identifiers based on file/module path without .py,
@@ -606,17 +601,13 @@ class RQG:
                     )
         
         grammar = self.grammars[grammar_name]
-        queries = []
         
         for i in range(count):
             query_seed = seed + i if seed is not None else None
-            query = grammar.generate(rule, seed=query_seed)
-            queries.append(query)
-        
-        return queries
+            yield grammar.generate(rule, seed=query_seed, context=context)
 
     def generate(self, grammar: Optional[str] = None, rule: str = "query", count: int = 1,
-                 seed: Optional[int] = None) -> List[str]:
+                 seed: Optional[int] = None, context: Any = None) -> List[str]:
         """Convenience wrapper to generate queries.
         
         - grammar: If None, uses the first registered grammar.
@@ -626,7 +617,7 @@ class RQG:
         """
         if grammar is None:
             grammar = next(iter(self.grammars.keys()))
-        return self.generate_from_grammar(grammar, rule=rule, count=count, seed=seed)
+        return self.generate_from_grammar(grammar, rule=rule, count=count, seed=seed, context=context)
 
     # ================================
     # High-level integration API

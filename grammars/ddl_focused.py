@@ -4,36 +4,55 @@ Generates complex CREATE TABLE, ALTER TABLE, and INDEX statements
 """
 
 from pyrqg.dsl.core import Grammar, Choice, Template, Lambda, ref
-from pyrqg.schema_support import get_schema_catalog
 import uuid
 
 # Create the grammar
 g = Grammar()
 
-CATALOG = get_schema_catalog()
-EXISTING_TABLES = sorted(CATALOG.list_tables())
-TABLE_COLUMNS = {name: list(info.columns.keys()) for name, info in CATALOG.tables.items()}
-TABLE_NUMERIC_COLUMNS = {
-    name: [col for col, colinfo in info.columns.items() if colinfo.base_type in {
-        'integer', 'bigint', 'smallint', 'numeric', 'decimal', 'real', 'double precision'
-    }]
-    for name, info in CATALOG.tables.items()
-}
+def _get_tables(ctx):
+    if hasattr(ctx, 'tables') and ctx.tables:
+        return sorted(list(ctx.tables.keys()))
+    return []
+
+def _get_columns(ctx, table):
+    if hasattr(ctx, 'tables') and ctx.tables and table in ctx.tables:
+        # SchemaAwareContext TableMetadata
+        return list(ctx.tables[table].columns.keys())
+    return []
+
+def _get_numeric_columns(ctx, table):
+    if hasattr(ctx, 'tables') and ctx.tables and table in ctx.tables:
+        cols = []
+        for cname, cmeta in ctx.tables[table].columns.items():
+            dtype = cmeta.data_type.lower()
+            if any(t in dtype for t in ['int', 'num', 'dec', 'real', 'doub']):
+                cols.append(cname)
+        return cols
+    return []
 
 def _table_rule(ctx):
+    tables = _get_tables(ctx)
+    if not tables:
+        # Fallback if no tables exist yet (e.g. at start of run)
+        # We return a dummy name, but execution might fail if used in ALTER
+        return "table_fallback"
+
     if ctx.state.pop('ddl_table_forced', False):
         table = ctx.state.get('ddl_table')
-        if table in EXISTING_TABLES:
+        if table in tables:
             return table
-    table = ctx.rng.choice(EXISTING_TABLES)
+    
+    table = ctx.rng.choice(tables)
     ctx.state['ddl_table'] = table
     return table
 
 
 def _current_existing_table(ctx):
+    tables = _get_tables(ctx)
     table = ctx.state.get('ddl_table')
-    if table not in EXISTING_TABLES:
-        table = ctx.rng.choice(EXISTING_TABLES)
+    if not table or table not in tables:
+        if not tables: return "table_fallback"
+        table = ctx.rng.choice(tables)
         ctx.state['ddl_table'] = table
     ctx.state['ddl_table_forced'] = True
     return table
@@ -41,7 +60,7 @@ def _current_existing_table(ctx):
 
 def _existing_column(ctx):
     table = _current_existing_table(ctx)
-    cols = TABLE_COLUMNS.get(table)
+    cols = _get_columns(ctx, table)
     if cols:
         return ctx.rng.choice(cols)
     return 'id'
@@ -49,7 +68,7 @@ def _existing_column(ctx):
 
 def _existing_numeric_column(ctx):
     table = _current_existing_table(ctx)
-    cols = TABLE_NUMERIC_COLUMNS.get(table)
+    cols = _get_numeric_columns(ctx, table)
     if cols:
         return ctx.rng.choice(cols)
     return _existing_column(ctx)
@@ -128,8 +147,9 @@ g.rule("alter_table", Choice(
     "alter_column"
 ))
 
-g.rule("add_column", Template(
-    "ALTER TABLE {existing_table} ADD COLUMN {unique_column} {data_type} {column_constraint}"
+g.rule("add_column", Choice(
+    Template("ALTER TABLE {existing_table} ADD COLUMN {unique_column} {data_type} {column_constraint}"),
+    Template("ALTER TABLE {existing_table} ADD COLUMN {unique_column} {data_type} CHECK ({unique_column} > 0)")
 ))
 
 g.rule("column_constraint", Choice(
@@ -137,7 +157,6 @@ g.rule("column_constraint", Choice(
     "DEFAULT 0",
     "DEFAULT ''",
     "DEFAULT CURRENT_TIMESTAMP",
-    "CHECK ({unique_column} > 0)",
     "UNIQUE"
 ))
 

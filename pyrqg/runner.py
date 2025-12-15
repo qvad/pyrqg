@@ -30,7 +30,7 @@ import argparse
 import time
 import re
 from pathlib import Path
-from typing import List, Optional, Tuple, TextIO
+from typing import List, Optional, Tuple, TextIO, Iterator, Any
 
 try:
     import psycopg2  # type: ignore
@@ -119,71 +119,90 @@ def action_list(rqg: RQG, _args: argparse.Namespace) -> int:
     return 0
 
 
-def _generate_queries_for_grammar(rqg: RQG, grammar: str, count: int, seed: Optional[int]) -> List[str]:
+def _generate_queries_for_grammar(rqg: RQG, grammar: str, count: int, seed: Optional[int], context: Any = None) -> Iterator[str]:
     # Prefer 'query' rule; api uses 'query' by default as well
-    return rqg.generate_from_grammar(grammar, rule="query", count=count, seed=seed)
+    return rqg.generate_from_grammar(grammar, rule="query", count=count, seed=seed, context=context)
 
 
 def action_grammar(rqg: RQG, args: argparse.Namespace) -> int:
-    queries = _generate_queries_for_grammar(rqg, args.grammar, args.count, args.seed)
-    shapes = {_query_shape(q) for q in queries if q.strip()}
-    unique_shapes = len(shapes)
-    if args.output:
-        with open(args.output, 'w', encoding='utf-8') as f:
-            for q in queries:
-                f.write(q.rstrip(";\n") + ";\n")
-        print(f"Saved {len(queries)} queries to {args.output}")
-        return 0
-
-    if args.dsn or os.environ.get("PYRQG_DSN") or args.execute:
-        # Execute generated queries
-        error_handle: Optional[TextIO] = None
-        conn = _connect(args.dsn)
+    context = None
+    dsn = args.dsn or os.environ.get("PYRQG_DSN")
+    
+    if dsn:
         try:
-            if args.error_log:
-                log_path = Path(args.error_log)
-                log_path.parent.mkdir(parents=True, exist_ok=True)
-                error_handle = log_path.open('a', encoding='utf-8')
-            ok, err, total_rows = _exec_statements(
-                conn,
-                queries,
-                continue_on_error=args.continue_on_error,
-                trace_all=args.verbose,
-                log_errors=args.log_errors,
-                error_file=error_handle,
-                track_rows=True,
-            )
-            print(
-                "Executed grammar '{grammar}': count={count}, ok={ok}, errors={err}, rows={rows}, unique_shapes={unique}".format(
-                    grammar=args.grammar,
-                    count=len(queries),
-                    ok=ok,
-                    err=err,
-                    rows=total_rows,
-                    unique=unique_shapes,
-                )
-            )
-            dup_shapes = len(queries) - unique_shapes
-            if dup_shapes > 0:
-                print(
-                    f"[WARN] Detected {dup_shapes} repeated query shapes out of {len(queries)}",
-                    file=sys.stderr,
-                )
-        finally:
-            if error_handle is not None:
-                error_handle.close()
-            conn.close()
-        return 0 if err == 0 or args.continue_on_error else 2
+            from pyrqg.dsl.schema_aware_context import SchemaAwareContext
+            # Introspection connection
+            context = SchemaAwareContext(dsn, seed=args.seed)
+        except ImportError:
+            pass
+        except Exception as e:
+            # Don't fail hard if introspection fails, just warn and use default context
+            print(f"[WARN] Could not initialize schema context: {e}", file=sys.stderr)
 
-    # Default: print to stdout
-    for q in queries:
-        print(q.rstrip(";\n") + ";")
-    if unique_shapes != len(queries):
-        print(
-            f"-- unique query shapes: {unique_shapes}/{len(queries)}",
-            file=sys.stderr,
-        )
-    return 0
+    try:
+        # Consume generator into list for CLI compatibility
+        queries = list(_generate_queries_for_grammar(rqg, args.grammar, args.count, args.seed, context=context))
+        shapes = {_query_shape(q) for q in queries if q.strip()}
+        unique_shapes = len(shapes)
+        if args.output:
+            with open(args.output, 'w', encoding='utf-8') as f:
+                for q in queries:
+                    f.write(q.rstrip(";\n") + ";\n")
+            print(f"Saved {len(queries)} queries to {args.output}")
+            return 0
+
+        if args.dsn or os.environ.get("PYRQG_DSN") or args.execute:
+            # Execute generated queries
+            error_handle: Optional[TextIO] = None
+            conn = _connect(args.dsn)
+            try:
+                if args.error_log:
+                    log_path = Path(args.error_log)
+                    log_path.parent.mkdir(parents=True, exist_ok=True)
+                    error_handle = log_path.open('a', encoding='utf-8')
+                ok, err, total_rows = _exec_statements(
+                    conn,
+                    queries,
+                    continue_on_error=args.continue_on_error,
+                    trace_all=args.verbose,
+                    log_errors=args.log_errors,
+                    error_file=error_handle,
+                    track_rows=True,
+                )
+                print(
+                    "Executed grammar '{grammar}': count={count}, ok={ok}, errors={err}, rows={rows}, unique_shapes={unique}".format(
+                        grammar=args.grammar,
+                        count=len(queries),
+                        ok=ok,
+                        err=err,
+                        rows=total_rows,
+                        unique=unique_shapes,
+                    )
+                )
+                dup_shapes = len(queries) - unique_shapes
+                if dup_shapes > 0:
+                    print(
+                        f"[WARN] Detected {dup_shapes} repeated query shapes out of {len(queries)}",
+                        file=sys.stderr,
+                    )
+            finally:
+                if error_handle is not None:
+                    error_handle.close()
+                conn.close()
+            return 0 if err == 0 or args.continue_on_error else 2
+
+        # Default: print to stdout
+        for q in queries:
+            print(q.rstrip(";\n") + ";")
+        if unique_shapes != len(queries):
+            print(
+                f"-- unique query shapes: {unique_shapes}/{len(queries)}",
+                file=sys.stderr,
+            )
+        return 0
+    finally:
+        if context:
+            context.close()
 
 
 def _ensure_default_schema(conn: PGConnection, rqg: RQG) -> None:
@@ -198,11 +217,27 @@ def action_all(rqg: RQG, args: argparse.Namespace) -> int:
         print("No grammars found.")
         return 0
 
-    # Connect once
+    # Connect once for execution
     conn = _connect(args.dsn)
+    
     try:
         if args.init_schema:
+            print("Initializing default schema...", file=sys.stderr)
             _ensure_default_schema(conn, rqg)
+
+        # Initialize schema context for generation (after schema init)
+        context = None
+        dsn = args.dsn or os.environ.get("PYRQG_DSN")
+        if dsn:
+            try:
+                from pyrqg.dsl.schema_aware_context import SchemaAwareContext
+                print(f"Introspecting schema from {dsn}...", file=sys.stderr)
+                context = SchemaAwareContext(dsn, seed=args.seed)
+                print(f"Loaded {len(context.tables)} tables.", file=sys.stderr)
+            except ImportError:
+                pass
+            except Exception as e:
+                print(f"[WARN] Could not initialize schema context: {e}", file=sys.stderr)
 
         total_ok = 0
         total_err = 0
@@ -215,7 +250,8 @@ def action_all(rqg: RQG, args: argparse.Namespace) -> int:
         try:
             for name in grammars:
                 try:
-                    queries = _generate_queries_for_grammar(rqg, name, args.count, args.seed)
+                    # Consume generator into list for stats calculation
+                    queries = list(_generate_queries_for_grammar(rqg, name, args.count, args.seed, context=context))
                     shapes = {_query_shape(q) for q in queries if q.strip()}
                     dup_shapes = len(queries) - len(shapes)
                     if dup_shapes > 0:
@@ -262,6 +298,8 @@ def action_all(rqg: RQG, args: argparse.Namespace) -> int:
         print(f"All grammars done: grammars={len(grammars)} total_ok={total_ok} total_err={total_err} total_rows={total_rows} time={dur:.2f}s")
         return 0 if total_err == 0 or args.continue_on_error else 2
     finally:
+        if context:
+            context.close()
         conn.close()
 
 

@@ -1,0 +1,27 @@
+# Dockerfile.integration for PyRQG tests
+
+FROM python:3.9-slim-bookworm
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libpq-dev \
+    git \
+    --no-install-recommends && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install PyRQG in editable mode
+COPY pyproject.toml .
+COPY pyrqg pyrqg
+COPY grammars grammars
+COPY tests tests
+RUN pip install --no-cache-dir -e .
+
+# Install pytest, pytest-cov and psycopg2 for running tests and connecting to Postgres/Yugabyte
+RUN pip install --no-cache-dir pytest pytest-cov psycopg2-binary

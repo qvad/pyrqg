@@ -4,9 +4,9 @@
 
 Welcome to PyRQG, the Python Random Query Generator.
 
-PyRQG is a powerful tool designed for testing database systems like PostgreSQL and YugabyteDB. It generates a high volume of varied and complex SQL queries, which can be used to find correctness bugs (fuzzing), identify performance regressions, or benchmark new database versions.
+PyRQG is a powerful, enterprise-grade tool designed for testing database systems like PostgreSQL and YugabyteDB. It generates a high volume of varied and **highly complex, syntactically and semantically valid SQL queries** using a sophisticated, state-aware grammar. This fuzzer explores a vast space of SQL, which can be used to find correctness bugs, identify performance regressions, or benchmark new database versions under realistic, challenging workloads.
 
-The core of PyRQG is a flexible, Python-native Domain-Specific Language (DSL) that allows you to define query-generating grammars in a declarative and composable way.
+The core of PyRQG is a flexible, Python-native Domain-Specific Language (DSL) that allows you to define query-generating grammars in a declarative and composable way, now featuring recursive expression generation, robust type tracking, and advanced DDL/DML.
 
 This guide covers how to set up the project, use its command-line interface, and extend it by writing your own grammars.
 
@@ -15,8 +15,9 @@ This guide covers how to set up the project, use its command-line interface, and
 To get started with PyRQG, you need to set up a Python virtual environment and install the necessary dependencies.
 
 **Prerequisites:**
-*   Python 3.8+
+*   Python 3.9+
 *   `git`
+*   `docker` and `docker compose` (for integration testing)
 
 **Steps:**
 
@@ -32,15 +33,15 @@ To get started with PyRQG, you need to set up a Python virtual environment and i
     # Create the virtual environment (if it doesn't exist)
     python3 -m venv .venv
 
-    # NOTE: You do not need to "activate" the venv. The following commands
-    # will use the executables directly from the venv's bin/ directory.
+    # NOTE: You do not need to "activate" the venv for the commands below.
+    # The commands will use the executables directly from the venv's bin/ directory.
     ```
 
 3.  **Install dependencies:**
-    The project's dependencies are listed in `requirements.txt`. Install them into the virtual environment using `pip`. You also need to install `pytest` for validation.
+    The project's dependencies are listed in `requirements.txt`. Install them into the virtual environment using `pip`. You also need to install `pytest` for validation and `psycopg2-binary` for database interaction.
     ```bash
     .venv/bin/pip install -r requirements.txt
-    .venv/bin/pip install pytest
+    .venv/bin/pip install pytest psycopg2-binary
     ```
 
 4.  **Install PyRQG in Editable Mode:**
@@ -75,7 +76,7 @@ Shows all the query generators that are ready to use.
 ```
 
 **2. Generate and Print Queries to Console**
-Quickly see the output of a grammar. This example generates 5 queries from `real_workload` and prints them to stdout.
+Quickly see the output of a grammar. The `real_workload` grammar is now stateful, so running it directly without a database will produce DDL and queries that rely on tables created within the same run.
 ```bash
 .venv/bin/pyrqg grammar --grammar real_workload --count 5
 ```
@@ -86,10 +87,10 @@ This is a critical step before running schema-dependent workloads. This command 
 .venv/bin/pyrqg ddl --execute --dsn "postgresql://user:pass@host:port/dbname"
 ```
 
-**4. Generate and Execute a Single Grammar**
-This runs 100 queries from the `ddl_focused` grammar against your database. It will continue even if some queries fail.
+**4. Generate and Execute a Single Grammar (e.g., `real_workload`)**
+This runs queries from the `real_workload` grammar against your database. It will now generate a mix of DDL, DML, and complex SELECT statements. It will continue even if some queries fail, collecting statistics.
 ```bash
-.venv/bin/pyrqg grammar --grammar ddl --count 100 --execute --continue-on-error --dsn "postgresql://user:pass@host:port/dbname"
+.venv/bin/pyrqg grammar --grammar real_workload --count 100 --execute --continue-on-error --dsn "postgresql://user:pass@host:port/dbname"
 ```
 
 **5. Run a Full Workload Test**
@@ -98,14 +99,101 @@ This is the most powerful command. It first initializes the schema, then runs 50
 .venv/bin/pyrqg all --init-schema --count 50 --execute --continue-on-error --dsn "postgresql://user:pass@host:port/dbname"
 ```
 
-## 4. How to Write Grammars
+## 4. Advanced Grammar Development: The Enterprise-Grade `real_workload`
+
+The `grammars/real_workload.py` has been significantly upgraded to an "Enterprise-Grade" fuzzer, generating highly complex and semantically aware SQL. This grammar is designed to rigorously stress-test database systems.
+
+**Key Features of `real_workload.py`:**
+
+*   **Stateful Schema (`ctx.db_state`):** The grammar maintains a persistent internal model of the created tables, their columns, and their properties (type, nullability). This ensures that generated queries always reference existing entities.
+*   **Recursive Expression Generation (`_gen_expr`):** SQL expressions are built recursively, creating deep and complex Abstract Syntax Trees (ASTs). This includes:
+    *   Arithmetic operations (`+`, `-`, `*`, `/`, `%`) with robust type handling and `NULLIF(denominator, 0)` for safe division.
+    *   String manipulations (`LOWER`, `UPPER`, `TRIM`, `MD5`, `||` for concatenation).
+    *   Boolean logic (`AND`, `OR`, `NOT`, `IS NULL`, `IS NOT NULL`).
+    *   Conditional logic (`CASE WHEN ... THEN ... ELSE ... END`).
+    *   Comparison operators (`=`, `<>`, `>`, `<`, `>=`, `<=`, `LIKE`, `ILIKE`, `BETWEEN`, `IN`).
+*   **Strict Type Enforcement:** During expression generation, the grammar strictly tracks and enforces type compatibility to minimize `DatatypeMismatch` and `UndefinedFunction` errors.
+*   **Advanced DDL (`_gen_ddl`, `_gen_index`):** Dynamically creates tables with:
+    *   Varied data types (including arrays).
+    *   `PRIMARY KEY` and `NOT NULL` constraints.
+    *   `CHECK` constraints.
+    *   Indexes (excluding types where unique indexing is problematic in some DBs).
+    *   Nullability is tracked and respected.
+*   **Complex Query Topologies (`_gen_complex_select`):**
+    *   Generates `SELECT` statements with random joins, aggregate functions, window functions (`ROW_NUMBER`), and nested subqueries.
+    *   Includes `WITH` clauses (CTEs) for modular query construction.
+    *   Supports `UNION ALL`, `UNION`, `INTERSECT`, and `EXCEPT` operations, ensuring type and column count compatibility between query arms.
+*   **Safe DML (`_gen_dml`):**
+    *   `INSERT` statements respect `NOT NULL` constraints by ensuring valid (non-NULL) data is generated.
+    *   `UPDATE` statements modify data using complex expressions.
+    *   `DELETE` statements remove data.
+
+This grammar aims to generate syntactically correct SQL that pushes the boundaries of database parsers, query planners, and execution engines, making it an invaluable tool for finding robustness issues.
+
+## 5. Running Integration Tests (Docker Compose)
+
+For comprehensive testing against real database instances, PyRQG provides a Docker Compose setup. This allows you to run the fuzzer against different database versions (e.g., PostgreSQL, YugabyteDB) in isolated, reproducible environments.
+
+**Prerequisites:**
+*   Docker Desktop or Docker Engine installed and running.
+
+**Steps:**
+
+1.  **Ensure Docker environment is ready:**
+    ```bash
+    docker info
+    ```
+    (Ensure Docker is running and you have access.)
+
+2.  **Run the tests using Docker Compose:**
+    This command will build the `pyrqg-runner` Docker image, start the database service(s) (currently PostgreSQL), wait for them to become healthy, and then execute the PyRQG test suite. The `--abort-on-container-exit` flag ensures that the entire setup is torn down once the tests complete.
+
+    ```bash
+    docker compose up --build --abort-on-container-exit --exit-code-from pyrqg-runner
+    ```
+    *(Note: The `yugabytedb` service is currently disabled in `docker-compose.yml` to ensure the PostgreSQL tests can run reliably due to observed stability issues with YugabyteDB in the Docker Compose setup. It can be re-enabled and debugged if needed.)*
+
+3.  **Interpreting Test Results (Statistics Output):**
+    The `pyrqg-runner` will execute a large number of queries (e.g., 100,000 for PostgreSQL) and print a detailed statistics report for each database.
+
+    ```
+    --- Starting Fuzz Test on postgres with 100000 queries ---
+
+    === Fuzzing Statistics ===
+    Total Queries: 100000
+    Successful:    84259
+    Failed:        15741
+    Error Breakdown:
+      - UndefinedFunction: 11618
+      - UndefinedTable: 2174
+      - StringDataRightTruncation: 133
+      - DatatypeMismatch: 1598
+      - NumericValueOutOfRange: 5
+      - CheckViolation: 149
+      - UniqueViolation: 64
+    ==========================
+    ```
+
+    *   **Successful queries:** Indicate SQL that the database parsed and executed without error.
+    *   **Failed queries:** Represent queries that caused an error in the database. These are often the most valuable findings for a fuzzer!
+    *   **Error Breakdown:** Provides a count of specific `psycopg2.Error` types encountered. Common errors like `UndefinedFunction`, `DatatypeMismatch`, and `DivisionByZero` often point to:
+        *   Edge cases in type coercion.
+        *   Limitations or strictness in the database's query planner.
+        *   Runtime semantic issues triggered by complex, randomized data.
+        *   Unexpected behavior in the database system itself.
+
+    A high rate of syntax errors (`SyntaxError`) from Python's perspective would indicate a bug in the grammar itself. The current grammar primarily produces valid SQL, and failures typically reflect semantic or runtime issues within the database.
+
+## 6. How to Write Grammars (Legacy)
+
+*(This section is from the previous version of the README.md and is kept for historical context. For advanced grammar development, refer to Section 4 and the `grammars/real_workload.py` example.)*
 
 Creating a new grammar is the primary way to extend PyRQG. A grammar is a Python file in the `grammars/` directory that defines a set of rules for generating text.
 
 ### Core Concepts
 
 *   **`Grammar` Object:** The container for your rules. You start by creating an instance: `g = Grammar("my_new_grammar")`.
-*   **Rules:** A rule is a named component that generates a piece of text. You define a rule with `g.rule("my_rule_name", <definition>)`.
+*   **Rules:** A rule is a named component that generates a piece of text. You define a rule with `g.rule("my_rule_name", <definition>)
 *   **The DSL:** The `<definition>` is created using PyRQG's simple DSL elements, imported from `pyrqg.dsl.core`.
 
 ### The DSL Elements
@@ -190,6 +278,8 @@ Greetings, Alice.
 
 ### Schema-Aware vs. Self-Contained Grammars
 
+*(This section is largely superseded by the advanced state-aware grammar in `real_workload.py`)*
+
 There are two main approaches to writing grammars:
 
 1.  **Schema-Aware (like `ddl_focused.py`):**
@@ -207,21 +297,69 @@ There are two main approaches to writing grammars:
     g.rule("any_real_table", Lambda(_random_table))
     ```
 
-2.  **Self-Contained (like `real_workload.py`):**
-    These grammars have no external dependencies. They generate their own data on-the-fly using **Common Table Expressions (CTEs)** in a `WITH` clause. This makes them highly portable and good for testing specific SQL features without needing a pre-initialized database.
+2.  **Self-Contained (like older `real_workload.py`):**
+    These grammars have no external dependencies. They generated their own data on-the-fly using **Common Table Expressions (CTEs)** in a `WITH` clause. This made them highly portable and good for testing specific SQL features without needing a pre-initialized database.
 
-    ```python
-    g.rule("with_clause", template("WITH my_data(id, value) AS (VALUES (1, 'a'), (2, 'b'))"))
-g.rule("query", template("{with_clause} SELECT value FROM my_data;"))
-    ```
+## 7. How to Validate the Project (Running Tests)
 
-## 5. How to Validate the Project (Running Tests)
+The project includes a test suite that was significantly improved. Running it is the best way to validate that the core components are working correctly and to exercise the fuzzing capabilities.
 
-The project includes a test suite that was significantly improved during the refactoring. Running it is the best way to validate that the core components are working correctly.
-
-After completing the installation, run the following command from the project root:
+**1. Running Unit Tests:**
+After completing the installation, run the following command from the project root. This will discover and run all basic unit tests in the `tests/` directory.
 ```bash
 .venv/bin/pytest -v
 ```
 
-This will discover and run all tests in the `tests/` directory. All tests should pass if the project is in a good state.
+**2. Running Integration Tests (Docker Compose):**
+For comprehensive, high-volume fuzz testing against real database instances (PostgreSQL, YugabyteDB), use the Docker Compose setup.
+
+**Prerequisites:**
+*   Docker Desktop or Docker Engine installed and running.
+
+**Execution:**
+This command will build the `pyrqg-runner` Docker image, start the database service(s) (currently PostgreSQL), wait for them to become healthy, and then execute the PyRQG test suite with 100,000 queries. The `--abort-on-container-exit` flag ensures that the entire setup is torn down once the tests complete.
+
+```bash
+docker compose up --build --abort-on-container-exit --exit-code-from pyrqg-runner
+```
+*(Note: The `yugabytedb` service is currently disabled in `docker-compose.yml` to ensure the PostgreSQL tests can run reliably due to observed stability issues with YugabyteDB in the Docker Compose setup. It can be re-enabled and debugged if needed.)*
+
+**Interpreting Test Results (Statistics Output):**
+The `pyrqg-runner` will execute a large number of queries (e.g., 100,000 for PostgreSQL) and print a detailed statistics report. This report categorizes errors encountered during query execution in the database.
+
+Example Output:
+```
+--- Starting Fuzz Test on postgres with 100000 queries ---
+
+=== Fuzzing Statistics ===
+Total Queries: 100000
+Successful:    84259
+Failed:        15741
+Error Breakdown:
+  - UndefinedFunction: 11618
+  - UndefinedTable: 2174
+  - StringDataRightTruncation: 133
+  - DatatypeMismatch: 1598
+  - NumericValueOutOfRange: 5
+  - CheckViolation: 149
+  - UniqueViolation: 64
+==========================
+```
+
+*   **Successful queries:** Indicate SQL that the database parsed and executed without error.
+*   **Failed queries:** Represent queries that caused an error in the database. These are often the most valuable findings for a fuzzer! The types of errors (e.g., `UndefinedFunction`, `DatatypeMismatch`, `DivisionByZero`) highlight:
+    *   Edge cases in type coercion.
+    *   Limitations or strictness in the database's query planner.
+    *   Runtime semantic issues triggered by complex, randomized data.
+    *   Potential bugs or unexpected behavior in the database system itself.
+
+This report is crucial for understanding the robustness of the database under a high-stress, randomized workload.
+
+## 8. Future Work
+
+*  Can
+*   **Expanded Type Coverage:** Include more complex data types (e.g., geometric, network types, range types) in expression generation.
+*   **Advanced SQL Constructs:** Add support for `MERGE`, `LATERAL JOIN`, `WINDOW` clauses in `WHERE`/`HAVING`, and `TABLESAMPLE`.
+*   **Error Categorization Enhancement:** Refine error parsing to provide more actionable insights into database behavior.
+*   **Performance Benchmarking Integration:** Add modules to collect and report query execution times, CPU/memory usage, etc.
+*   **Grammar Configuration:** Externalize more parameters for grammar generation (e.g., depth of expressions, number of joins) for easier tuning.
