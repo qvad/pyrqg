@@ -82,7 +82,7 @@ def _gen_expr(ctx, available_cols, depth=0, desired_type=None):
     rng = ctx.rng
     
     # Base case: deeper than limit or random stop
-    if depth > 3 or (depth > 0 and rng.random() < 0.4):
+    if depth > 3 or (depth > 0 and rng.random() < 0.3):
         # Try to find a column matching desired type
         if available_cols and rng.random() < 0.7:
             if desired_type:
@@ -122,40 +122,91 @@ def _gen_expr(ctx, available_cols, depth=0, desired_type=None):
         val2 = _gen_expr(ctx, available_cols, depth+1, op_type)
         return f"(CASE WHEN {cond} THEN {val1} ELSE {val2} END)"
 
+    # --- Casting (5% chance) ---
+    if rng.random() < 0.05 and depth < 2:
+        # Cast FROM something TO op_type
+        if op_type in STRING_TYPES or op_type == 'STR':
+            # Cast Numeric to String
+            inner = _gen_expr(ctx, available_cols, depth+1, 'NUM')
+            return f"CAST({inner} AS {op_type if op_type != 'STR' else 'TEXT'})"
+        if op_type == 'INTEGER':
+             inner = _gen_expr(ctx, available_cols, depth+1, 'DECIMAL(10,2)')
+             return f"CAST({inner} AS INTEGER)"
+
     # --- Numeric Logic ---
     if op_type in NUMERIC_TYPES or op_type == 'NUM':
-        op = rng.choice(['+', '-', '*', '/', '%'])
+        dice = rng.random()
         
-        # Strict Integer Arithmetic for Modulo
-        if op == '%' or op_type == 'INTEGER' or op_type == 'BIGINT':
-            left = _gen_expr(ctx, available_cols, depth+1, 'INTEGER')
-            right = _gen_expr(ctx, available_cols, depth+1, 'INTEGER')
+        # 1. Standard Arithmetic (50%)
+        if dice < 0.5:
+            op = rng.choice(['+', '-', '*', '/', '%'])
             
-            # Safe Division/Modulo
-            if op in ('%', '/'):
-                return f"({left} {op} NULLIF({right}, 0))"
+            # Strict Integer Arithmetic for Modulo
+            if op == '%' or op_type == 'INTEGER' or op_type == 'BIGINT':
+                left = _gen_expr(ctx, available_cols, depth+1, 'INTEGER')
+                right = _gen_expr(ctx, available_cols, depth+1, 'INTEGER')
+                # Safe Division/Modulo
+                if op in ('%', '/'):
+                    return f"({left} {op} NULLIF({right}, 0))"
+                return f"({left} {op} {right})"
+                
+            # General Numeric
+            left = _gen_expr(ctx, available_cols, depth+1, 'NUM')
+            right = _gen_expr(ctx, available_cols, depth+1, 'NUM')
+            
+            if op in ('/', '%'):
+                 return f"({left} {op} NULLIF({right}, 0))"
             return f"({left} {op} {right})"
+
+        # 2. Math Functions (30%)
+        elif dice < 0.8:
+            func = rng.choice(['ABS', 'CEIL', 'FLOOR', 'ROUND', 'TRUNC', 'SIGN', 'SQRT'])
+            arg = _gen_expr(ctx, available_cols, depth+1, 'NUM')
+            if func == 'SQRT':
+                return f"SQRT(ABS({arg}))" # Safety
+            return f"{func}({arg})"
             
-        # General Numeric
-        left = _gen_expr(ctx, available_cols, depth+1, 'NUM')
-        right = _gen_expr(ctx, available_cols, depth+1, 'NUM')
-        
-        if op in ('/', '%'):
-             return f"({left} {op} NULLIF({right}, 0))"
-        return f"({left} {op} {right})"
+        # 3. String-to-Numeric Functions (20%)
+        else:
+            func = rng.choice(['LENGTH', 'POSITION'])
+            if func == 'LENGTH':
+                arg = _gen_expr(ctx, available_cols, depth+1, 'STR')
+                return f"LENGTH({arg})"
+            elif func == 'POSITION':
+                # POSITION('a' IN str)
+                sub = f"'{rng.choice(['a','e','i','o','u'])}'"
+                target = _gen_expr(ctx, available_cols, depth+1, 'STR')
+                return f"POSITION({sub} IN {target})"
     
     # --- String Logic ---
     if op_type in STRING_TYPES or op_type == 'STR':
-        if rng.random() < 0.5:
-            # Concatenation
+        dice = rng.random()
+        
+        # 1. Concatenation (40%)
+        if dice < 0.4:
             left = _gen_expr(ctx, available_cols, depth+1, 'STR')
             right = _gen_expr(ctx, available_cols, depth+1, 'STR')
             return f"({left} || {right})"
-        else:
-            # String Functions
-            func = rng.choice(['LOWER', 'UPPER', 'TRIM', 'MD5'])
+        
+        # 2. Basic Functions (30%)
+        elif dice < 0.7:
+            func = rng.choice(['LOWER', 'UPPER', 'TRIM', 'MD5', 'REVERSE', 'INITCAP'])
             arg = _gen_expr(ctx, available_cols, depth+1, 'STR')
             return f"{func}({arg})"
+
+        # 3. Advanced Functions (30%)
+        else:
+            choice_ = rng.choice(['SUBSTRING', 'REPLACE', 'OVERLAY', 'LEFT', 'RIGHT'])
+            target = _gen_expr(ctx, available_cols, depth+1, 'STR')
+            
+            if choice_ == 'SUBSTRING':
+                return f"SUBSTRING({target} FROM 1 FOR {rng.randint(1, 5)})"
+            elif choice_ == 'REPLACE':
+                return f"REPLACE({target}, 'a', 'b')"
+            elif choice_ == 'OVERLAY':
+                return f"OVERLAY({target} PLACING 'XYZ' FROM {rng.randint(1, 3)})"
+            elif choice_ in ('LEFT', 'RIGHT'):
+                return f"{choice_}({target}, {rng.randint(1, 5)})"
 
     # --- Boolean Logic ---
     if op_type == 'BOOLEAN' or op_type == 'BOOL':
@@ -176,15 +227,21 @@ def _gen_expr(ctx, available_cols, depth=0, desired_type=None):
         if subtype == 'STR':
             # Simplified pattern matching to avoid regexp errors
             left = _gen_expr(ctx, available_cols, depth+1, 'STR')
-            if rng.random() < 0.3:
+            dice_str = rng.random()
+            if dice_str < 0.3:
                 return f"({left} LIKE '%{rng.choice(['a','e','i'])}%')"
-            right = _gen_expr(ctx, available_cols, depth+1, 'STR')
-            return f"({left} = {right})"
+            elif dice_str < 0.6:
+                return f"({left} ILIKE '%{rng.choice(['a','e','i'])}%')"
+            else:
+                right = _gen_expr(ctx, available_cols, depth+1, 'STR')
+                return f"({left} = {right})"
 
         if subtype == 'BOOL':
             op = rng.choice(['AND', 'OR'])
             left = _gen_expr(ctx, available_cols, depth+1, 'BOOL')
             right = _gen_expr(ctx, available_cols, depth+1, 'BOOL')
+            if rng.random() < 0.2:
+                return f"(NOT ({left} {op} {right}))"
             return f"({left} {op} {right})"
 
     # Fallback: strictly typed Coalesce
