@@ -206,7 +206,7 @@ class QueryGenerator:
             features=features
         )
     
-    def update(self,
+    def update(
                table: Optional[str] = None,
                where: bool = True,
                returning: bool = False,
