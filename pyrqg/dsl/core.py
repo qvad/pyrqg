@@ -5,10 +5,10 @@ This provides a declarative way to define SQL grammars with minimal syntax.
 """
 
 import random
+import re
 from typing import List, Dict, Any, Union, Callable, Optional, Tuple
 from dataclasses import dataclass, field
 from abc import ABC, abstractmethod
-import re
 
 
 # ============================================================================
@@ -174,7 +174,14 @@ class Repeat(Element):
 # ============================================================================
 
 class Template(Element):
-    """Template with placeholders"""
+    """
+    Template with placeholders.
+    
+    Supports placeholders in the format:
+    - {name}: Replaced by value of rule 'name'.
+    - {name:rule}: Replaced by value of 'rule', stored as 'name' (if needed).
+    - {{name}}: Escaped braces (becomes {name}).
+    """
     def __init__(self, template: str, grammar=None, **kwargs):
         self.template = template
         self.grammar = grammar
@@ -204,7 +211,6 @@ class Template(Element):
 
         # Template substitution - handle both {key} and {key:rule} formats
         result = self.template
-        import re
 
         # Regex to match placeholders {key} or {key:rule}, but NOT {{key}}
         # Matches: { followed by non-{}: chars, optional :rule, ending with }
@@ -366,7 +372,13 @@ class Grammar:
         return self.rules[rule_name].generate(ctx)
     
     def _finalize_templates(self):
-        """Finalize all templates to ensure placeholders are resolved"""
+        """
+        Finalize all templates to ensure placeholders are resolved.
+        
+        This recursively visits all rules and elements to ensure that any templates
+        defined with placeholders (like '{foo}') have been parsed and linked to their
+        corresponding rules, even if those rules were defined *after* the template.
+        """
         if hasattr(self, '_finalized'):
             return
         
@@ -438,8 +450,12 @@ def ref(rule_name):
 
 
 def parse_template(template_str, grammar):
-    """Parse template string and extract placeholders"""
-    import re
+    """
+    Parse template string and extract placeholders.
+    
+    Identifies patterns like {placeholder} or {placeholder:rule} to create
+    corresponding DSL elements (RuleRef).
+    """
     # Match {placeholder} or {placeholder:rule_name}, but NOT {{placeholder}}
     # Use same pattern as generate()
     pattern = r'(?<!\{)\{([^{}:]+)(?::([^{}]+))?\}(?!\})'

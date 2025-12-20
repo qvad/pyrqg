@@ -2,15 +2,29 @@
 PyRQG Library API - Simple interface for query generation
 """
 
-import random
-from typing import Dict, List, Optional, Any, Iterator
+import os
 import sys
+import random
+import importlib.util
+from pathlib import Path
+from typing import Dict, List, Optional, Any, Iterator
 from dataclasses import dataclass, field
 
 # Use relative imports instead of path manipulation
-
 from pyrqg.dsl.core import Grammar
 from pyrqg.ddl_generator import DDLGenerator, TableDefinition
+
+# Optional Built-in Grammars (Loaded safely)
+try:
+    from grammars.ddl_focused import g as _builtin_ddl
+except ImportError:
+    _builtin_ddl = None
+
+try:
+    from grammars.real_workload import grammar as _builtin_real_workload
+except ImportError:
+    _builtin_real_workload = None
+
 
 __all__ = [
     "TableMetadata",
@@ -338,33 +352,22 @@ class RQG:
     
     def _load_builtin_grammars(self):
         """Load built-in grammars packaged with PyRQG."""
-        
-        def _add_alias(alias: str, gobj):
-            if alias and alias not in self.grammars and gobj is not None:
-                self.grammars[alias] = gobj
-        
-        try:
-            from grammars.ddl_focused import g as ddl
-            self.grammars['ddl'] = ddl
-        except Exception as e:
-            print(f"[WARN] Failed to load builtin grammar 'ddl_focused': {e}", file=sys.stderr)
+        if _builtin_ddl:
+            self.grammars['ddl'] = _builtin_ddl
+        else:
+             print("[WARN] Builtin grammar 'ddl_focused' not found", file=sys.stderr)
 
-        try:
-            from grammars.real_workload import grammar as real_workload
-            self.grammars['real_workload'] = real_workload
-        except Exception as e:
-            print(f"[WARN] Failed to load builtin grammar 'real_workload': {e}", file=sys.stderr)
-
+        if _builtin_real_workload:
+            self.grammars['real_workload'] = _builtin_real_workload
+        else:
+             print("[WARN] Builtin grammar 'real_workload' not found", file=sys.stderr)
 
     def _load_plugin_grammars(self):
         """Load user-provided grammars from environment variable PYRQG_GRAMMARS.
         
         Format: PYRQG_GRAMMARS="module.path1,module.path2,..."
         Each module must expose a top-level variable `g` (Grammar instance).
-        Names are inferred from the module basename unless duplicated, where
-        a suffix is added.
         """
-        import os
         value = os.environ.get("PYRQG_GRAMMARS")
         if not value:
             return
@@ -535,7 +538,6 @@ class RQG:
     
     def load_grammar_file(self, name: str, file_path: str):
         """Load a grammar from a Python file"""
-        import importlib.util
         spec = importlib.util.spec_from_file_location(f"grammar_{name}", file_path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
@@ -550,12 +552,10 @@ class RQG:
                             context: Any = None) -> Iterator[str]:
         """Generate queries from a grammar.
         
-        New: Supports path-style identifiers based on file/module path without .py,
-        e.g., 'yugabyte/outer_join_portable' for grammars/yugabyte/outer_join_portable.py.
-        If the grammar name is not preloaded, we attempt to import it dynamically
-        from the 'grammars.' package using this mapping.
-        Falls back to loading from the repository's grammars/ folder relative to this file
-        when the import-based approach fails (useful in test environments where rootdir is tests/).
+        Logic flows as follows:
+        1. Check if grammar is already loaded/registered.
+        2. If not, try dynamic import treating 'grammar_name' as a module path.
+        3. If that fails, try looking for the file in the repository's 'grammars/' directory.
         """
         if grammar_name not in self.grammars:
             # Attempt dynamic import using path-style identifier mapping
@@ -571,8 +571,6 @@ class RQG:
             except Exception:
                 # Filesystem-based fallback: load from repo-root/grammars/<path>.py
                 try:
-                    import importlib.util
-                    from pathlib import Path
                     base_dir = Path(__file__).parent.parent / "grammars"
                     rel_path = Path(*grammar_name.replace('.', '/').split('/'))
                     file_path = base_dir / (str(rel_path) + ".py")
@@ -608,7 +606,7 @@ class RQG:
 
     def generate(self, grammar: Optional[str] = None, rule: str = "query", count: int = 1,
                  seed: Optional[int] = None, context: Any = None) -> List[str]:
-        """Convenience wrapper to generate queries.
+        """Convenience wrapper to generate queries. 
         
         - grammar: If None, uses the first registered grammar.
         - rule: Grammar rule to generate from (default: 'query').

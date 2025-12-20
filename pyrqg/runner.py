@@ -35,9 +35,15 @@ from typing import List, Optional, Tuple, TextIO, Iterator, Any
 try:
     import psycopg2  # type: ignore
     from psycopg2.extensions import connection as PGConnection
-except Exception:  # pragma: no cover - optional at import time for non-exec commands
+except ImportError:  # pragma: no cover - optional at import time for non-exec commands
     psycopg2 = None  # type: ignore
     PGConnection = None  # type: ignore
+
+try:
+    from pyrqg.dsl.schema_aware_context import SchemaAwareContext
+except ImportError:
+    # Likely missing psycopg2 or other dependencies
+    SchemaAwareContext = None # type: ignore
 
 from pyrqg.api import RQG, create_rqg
 
@@ -103,7 +109,15 @@ _NUMERIC_LITERAL_RE = re.compile(r"\b\d+(?:\.\d+)?\b")
 
 
 def _query_shape(query: str) -> str:
-    """Normalize a query so literal changes don't produce new shapes."""
+    """
+    Normalize a query so literal changes don't produce new shapes.
+    
+    Replaces string literals with '?' and numeric literals with ?.
+    Example: 
+      SELECT * FROM t WHERE id = 5 AND name = 'foo'
+    becomes:
+      SELECT * FROM t WHERE id = ? AND name = '?'
+    """
     q = query.strip()
     q = _STRING_LITERAL_RE.sub("'?'", q)
     q = _NUMERIC_LITERAL_RE.sub('?', q)
@@ -128,13 +142,10 @@ def action_grammar(rqg: RQG, args: argparse.Namespace) -> int:
     context = None
     dsn = args.dsn or os.environ.get("PYRQG_DSN")
     
-    if dsn:
+    if dsn and SchemaAwareContext:
         try:
-            from pyrqg.dsl.schema_aware_context import SchemaAwareContext
             # Introspection connection
             context = SchemaAwareContext(dsn, seed=args.seed)
-        except ImportError:
-            pass
         except Exception as e:
             # Don't fail hard if introspection fails, just warn and use default context
             print(f"[WARN] Could not initialize schema context: {e}", file=sys.stderr)
@@ -228,14 +239,11 @@ def action_all(rqg: RQG, args: argparse.Namespace) -> int:
         # Initialize schema context for generation (after schema init)
         context = None
         dsn = args.dsn or os.environ.get("PYRQG_DSN")
-        if dsn:
+        if dsn and SchemaAwareContext:
             try:
-                from pyrqg.dsl.schema_aware_context import SchemaAwareContext
                 print(f"Introspecting schema from {dsn}...", file=sys.stderr)
                 context = SchemaAwareContext(dsn, seed=args.seed)
                 print(f"Loaded {len(context.tables)} tables.", file=sys.stderr)
-            except ImportError:
-                pass
             except Exception as e:
                 print(f"[WARN] Could not initialize schema context: {e}", file=sys.stderr)
 

@@ -30,11 +30,19 @@ COMPLEX_TYPES = {'BOOLEAN'} # JSONB, UUID, Arrays handled specifically
 ALL_TYPES = list(NUMERIC_TYPES | STRING_TYPES | DATETIME_TYPES | COMPLEX_TYPES)
 
 def _get_state(ctx):
+    """
+    Retrieve or initialize the database state dictionary attached to the context.
+    Used for caching schema information.
+    """
     if not hasattr(ctx, 'db_state'):
         ctx.db_state = {'tables': {}, 'views': []}
     return ctx.db_state
 
 def _map_postgres_type(dtype):
+    """
+    Map raw PostgreSQL data types (e.g., 'character varying') to 
+    simplified types used by the fuzzer (e.g., 'TEXT').
+    """
     dtype = dtype.upper()
     if 'INT' in dtype: return 'INTEGER'
     if 'CHAR' in dtype or 'TEXT' in dtype: return 'TEXT'
@@ -44,6 +52,10 @@ def _map_postgres_type(dtype):
     return 'TEXT' # Default fallback
 
 def _get_tables(ctx):
+    """
+    Retrieves tables from the Context. 
+    Dynamically maps 'SchemaAwareContext' metadata to a local simplified format for faster lookup.
+    """
     # Schema Awareness: Use catalog from SchemaAwareContext
     if hasattr(ctx, 'tables') and ctx.tables:
         # Convert SchemaAwareContext tables to local format on the fly
@@ -53,7 +65,8 @@ def _get_tables(ctx):
             state['tables_cache'] = {}
             for t_name, t_meta in ctx.tables.items():
                 cols = {}
-                # Handle TableMetadata object
+                # Handle TableMetadata object (assumes structure with 'columns' dict)
+                # Note: This relies on SchemaAwareContext's TableMetadata structure
                 for c_name, c_meta in t_meta.columns.items():
                     cols[c_name] = {
                         'type': _map_postgres_type(c_meta.data_type),
@@ -76,8 +89,18 @@ def _pick_table(ctx):
 
 def _gen_expr(ctx, available_cols, depth=0, desired_type=None):
     """
-    Recursively generates a valid SQL expression.
-    available_cols: dict of {col_name: type} available in current scope
+    Recursively generates a valid SQL expression with strict type safety. 
+    
+    Args:
+        ctx: Generation context (RNG).
+        available_cols: Dict of {col_name: type} available in current scope.
+        depth: Current recursion depth (to prevent infinite trees).
+        desired_type: Target SQL type for the expression.
+        
+    Features:
+    - Handles Math, String, and Boolean logic.
+    - Implements safety guards (NULLIF for division, ABS for SQRT).
+    - Supports type casting and control flow (CASE WHEN).
     """
     rng = ctx.rng
     
@@ -252,6 +275,10 @@ def _gen_expr(ctx, available_cols, depth=0, desired_type=None):
 # =============================================================================
 
 def _gen_ddl(ctx):
+    """
+    Generates random CREATE TABLE statements.
+    Includes random columns, types, and constraints (PK, UNIQUE, CHECK).
+    """
     # DDL generation is kept as part of workload churn, but not as fallback
     name = f"t_{_random_id()}"
     
@@ -278,6 +305,7 @@ def _gen_ddl(ctx):
     return f"CREATE TABLE {name} (\n  " + ",\n  ".join(col_defs) + "\n)"
 
 def _gen_index(ctx):
+    "Generates random CREATE INDEX statements on existing tables."
     t = _pick_table(ctx)
     if not t: return "SELECT 1"
     
@@ -296,13 +324,14 @@ def _gen_index(ctx):
 # =============================================================================
 
 def _gen_select_block(ctx, tables_scope, depth=0, column_types=None):
+    """Helper to generate a basic SELECT-FROM-JOIN-WHERE block."""
     primary = tables_scope[0]
     joins = []
     
     # Build available columns map: just types
     available_cols = {}
     primary_meta = _get_tables(ctx)[primary]
-    for c, m in primary_meta['columns'].items():
+    for c, m in primary_meta['columns '].items():
         available_cols[f"{primary}.{c}"] = m['type']
         
     for other in tables_scope[1:]:
@@ -350,6 +379,10 @@ def _gen_select_block(ctx, tables_scope, depth=0, column_types=None):
     return query
 
 def _gen_complex_select(ctx):
+    """
+    Generates a SELECT statement with complex topologies.
+    Can include CTEs (WITH clauses), Set Operations (UNION), or standard Joins.
+    """
     tables = _get_tables(ctx)
     if not tables: return "SELECT 1"
     
@@ -380,6 +413,7 @@ def _gen_complex_select(ctx):
 # =============================================================================
 
 def _gen_dml(ctx):
+    """Generates valid INSERT/UPDATE/DELETE statements respecting NOT NULL constraints."""
     t = _pick_table(ctx)
     if not t: return "SELECT 1"
     table = _get_tables(ctx)[t]
