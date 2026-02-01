@@ -15,6 +15,11 @@ Reference: https://github.com/anse1/sqlsmith
 """
 
 from pyrqg.dsl.core import Grammar, Lambda, choice, template, maybe, repeat, Literal
+from pyrqg.dsl.utils import (
+    pick_table_and_store, pick_column as utils_pick_column, generate_constant,
+    random_int, random_bigint, random_boolean, random_text, random_numeric,
+    random_date, random_timestamp, inc_depth, dec_depth, get_depth
+)
 
 g = Grammar("sqlsmith_ysql")
 
@@ -24,141 +29,30 @@ g = Grammar("sqlsmith_ysql")
 
 DATA_TYPES = ['INT', 'BIGINT', 'SMALLINT', 'BOOLEAN', 'TEXT', 'VARCHAR', 'NUMERIC', 'REAL', 'DOUBLE PRECISION', 'DATE', 'TIMESTAMP', 'TIMESTAMPTZ']
 
-NUMERIC_TYPES = ['INT', 'BIGINT', 'SMALLINT', 'NUMERIC', 'REAL', 'DOUBLE PRECISION']
-TEXT_TYPES = ['TEXT', 'VARCHAR', 'CHAR']
-TEMPORAL_TYPES = ['DATE', 'TIMESTAMP', 'TIMESTAMPTZ']
-
 # =============================================================================
-# Helper Functions
+# Helper Functions - Using consolidated utilities
 # =============================================================================
 
 def _pick_table(ctx):
     """Pick a random table and store it in context state."""
-    if ctx.tables:
-        t = ctx.rng.choice(list(ctx.tables.keys()))
-        ctx.state['table'] = t
-        ctx.state.setdefault('available_tables', []).append(t)
-        return t
-    return "t0"
+    return pick_table_and_store(ctx, fallback="t0")
+
 
 def _pick_column(ctx, data_type=None):
     """Pick a column, optionally filtering by data type."""
-    t_name = ctx.state.get('table')
-    if not t_name or t_name not in ctx.tables:
-        return "c0"
-    table = ctx.tables[t_name]
-    cols = list(table.columns.values())
-    if data_type:
-        cols = [c for c in cols if _matches_type(c.data_type, data_type)]
-    if not cols:
-        cols = list(table.columns.values())
-    if not cols:
-        return "c0"
-    return ctx.rng.choice([c.name for c in cols])
+    return utils_pick_column(ctx, data_type=data_type, fallback="c0")
 
-def _matches_type(col_type: str, target_type: str) -> bool:
-    """Check if column type matches target type category."""
-    col_lower = col_type.lower().split('(')[0].strip()
-    target_lower = target_type.lower()
-
-    type_groups = {
-        'numeric': ['int', 'integer', 'bigint', 'smallint', 'numeric', 'decimal', 'real', 'float', 'double precision', 'float4', 'float8', 'serial', 'bigserial'],
-        'text': ['text', 'varchar', 'character varying', 'char', 'character', 'name', 'bpchar'],
-        'boolean': ['boolean', 'bool'],
-        'temporal': ['date', 'timestamp', 'timestamptz', 'time', 'timetz', 'interval'],
-    }
-
-    for group, types in type_groups.items():
-        if target_lower in types or target_lower == group:
-            return col_lower in types
-    return col_lower == target_lower
-
-# =============================================================================
-# Constants Generation
-# =============================================================================
-
-def _random_int(ctx, min_val=-100000, max_val=100000):
-    return str(ctx.rng.randint(min_val, max_val))
-
-def _random_bigint(ctx):
-    return str(ctx.rng.randint(-9223372036854775808 // 1000000, 9223372036854775807 // 1000000))
-
-def _random_boolean(ctx):
-    return ctx.rng.choice(['TRUE', 'FALSE'])
-
-def _random_text(ctx):
-    length = ctx.rng.randint(0, 20)
-    chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 '
-    text = ''.join(ctx.rng.choice(chars) for _ in range(length))
-    text = text.replace("'", "''")
-    return f"'{text}'"
-
-def _random_numeric(ctx):
-    whole = ctx.rng.randint(-10000, 10000)
-    frac = ctx.rng.randint(0, 999999)
-    return f"{whole}.{frac}"
-
-def _random_date(ctx):
-    year = ctx.rng.randint(1970, 2030)
-    month = ctx.rng.randint(1, 12)
-    day = ctx.rng.randint(1, 28)
-    return f"'{year:04d}-{month:02d}-{day:02d}'"
-
-def _random_timestamp(ctx):
-    year = ctx.rng.randint(1970, 2030)
-    month = ctx.rng.randint(1, 12)
-    day = ctx.rng.randint(1, 28)
-    hour = ctx.rng.randint(0, 23)
-    minute = ctx.rng.randint(0, 59)
-    second = ctx.rng.randint(0, 59)
-    return f"'{year:04d}-{month:02d}-{day:02d} {hour:02d}:{minute:02d}:{second:02d}'"
 
 def _gen_constant(ctx, data_type=None):
     """Generate a type-appropriate constant."""
-    if ctx.rng.random() < 0.05:
-        return 'NULL'
+    return generate_constant(ctx, data_type)
 
-    if data_type is None:
-        data_type = ctx.rng.choice(['INT', 'TEXT', 'BOOLEAN'])
-
-    data_type_upper = data_type.upper()
-
-    generators = {
-        'INT': _random_int,
-        'INTEGER': _random_int,
-        'BIGINT': _random_bigint,
-        'SMALLINT': lambda c: _random_int(c, -32768, 32767),
-        'BOOLEAN': _random_boolean,
-        'TEXT': _random_text,
-        'VARCHAR': _random_text,
-        'NUMERIC': _random_numeric,
-        'DECIMAL': _random_numeric,
-        'REAL': _random_numeric,
-        'DOUBLE PRECISION': _random_numeric,
-        'DATE': _random_date,
-        'TIMESTAMP': _random_timestamp,
-        'TIMESTAMPTZ': _random_timestamp,
-    }
-
-    gen = generators.get(data_type_upper, _random_text)
-    return gen(ctx)
 
 # =============================================================================
 # Expression Depth Control
 # =============================================================================
 
 MAX_DEPTH = 4
-
-def _get_depth(ctx):
-    return ctx.state.get('depth', 0)
-
-def _inc_depth(ctx):
-    depth = ctx.state.get('depth', 0) + 1
-    ctx.state['depth'] = depth
-    return depth
-
-def _dec_depth(ctx):
-    ctx.state['depth'] = max(0, ctx.state.get('depth', 0) - 1)
 
 # =============================================================================
 # Operators
@@ -180,7 +74,7 @@ WINDOW_FUNCTIONS = ['row_number', 'rank', 'dense_rank', 'percent_rank', 'cume_di
 
 def _gen_function_call(ctx, return_type='INT'):
     """Generate a function call for a given return type."""
-    depth = _inc_depth(ctx)
+    depth = inc_depth(ctx)
     try:
         if depth > MAX_DEPTH:
             return _gen_constant(ctx, return_type)
@@ -201,7 +95,7 @@ def _gen_function_call(ctx, return_type='INT'):
             func = ctx.rng.choice(TEXT_FUNCTIONS)
             arg = _gen_expression(ctx, 'TEXT')
             if func == 'replace':
-                return f"replace({arg}, {_random_text(ctx)}, {_random_text(ctx)})"
+                return f"replace({arg}, {random_text(ctx)}, {random_text(ctx)})"
             elif func == 'substring':
                 return f"substring({arg} from {ctx.rng.randint(1, 10)} for {ctx.rng.randint(1, 10)})"
             elif func in ['left', 'right']:
@@ -215,11 +109,11 @@ def _gen_function_call(ctx, return_type='INT'):
         else:
             return _gen_constant(ctx, return_type)
     finally:
-        _dec_depth(ctx)
+        dec_depth(ctx)
 
 def _gen_aggregate(ctx, return_type=None):
     """Generate an aggregate function call."""
-    depth = _inc_depth(ctx)
+    depth = inc_depth(ctx)
     try:
         agg = ctx.rng.choice(AGGREGATE_FUNCTIONS)
 
@@ -244,7 +138,7 @@ def _gen_aggregate(ctx, return_type=None):
             arg = _gen_expression(ctx, 'NUMERIC')
             return f"{agg}({distinct}{arg})"
     finally:
-        _dec_depth(ctx)
+        dec_depth(ctx)
 
 def _gen_window_function(ctx):
     """Generate a window function call (SQLsmith style)."""
@@ -301,7 +195,7 @@ def _gen_window_function(ctx):
 
 def _gen_expression(ctx, data_type=None):
     """Generate a type-aware expression."""
-    depth = _inc_depth(ctx)
+    depth = inc_depth(ctx)
     try:
         if depth > MAX_DEPTH or ctx.rng.random() < 0.35:
             if ctx.rng.random() < 0.6 and ctx.tables:
@@ -322,7 +216,7 @@ def _gen_expression(ctx, data_type=None):
         else:
             return _gen_constant(ctx, data_type)
     finally:
-        _dec_depth(ctx)
+        dec_depth(ctx)
 
 def _gen_bool_expression(ctx):
     """Generate a boolean expression."""
@@ -352,7 +246,7 @@ def _gen_bool_expression(ctx):
     elif choice_val < 0.75:
         # LIKE/ILIKE
         left = _gen_expression(ctx, 'TEXT')
-        pattern = _random_text(ctx)
+        pattern = random_text(ctx)
         op = ctx.rng.choice(['LIKE', 'ILIKE', 'NOT LIKE', 'NOT ILIKE'])
         return f"({left}) {op} {pattern}"
     elif choice_val < 0.85:
@@ -440,7 +334,7 @@ def _gen_text_expression(ctx):
 
 def _gen_subquery(ctx):
     """Generate a subquery for use in expressions."""
-    depth = _inc_depth(ctx)
+    depth = inc_depth(ctx)
     try:
         if depth > MAX_DEPTH - 1:
             t_name = _pick_table(ctx)
@@ -457,11 +351,11 @@ def _gen_subquery(ctx):
 
         return f"SELECT {col} FROM {t_name}{where_clause}"
     finally:
-        _dec_depth(ctx)
+        dec_depth(ctx)
 
 def _gen_scalar_subquery(ctx):
     """Generate a scalar subquery (returns single value)."""
-    depth = _inc_depth(ctx)
+    depth = inc_depth(ctx)
     try:
         t_name = _pick_table(ctx)
         col = _pick_column(ctx, 'INT')
@@ -474,7 +368,7 @@ def _gen_scalar_subquery(ctx):
 
         return f"SELECT {agg} FROM {t_name}{where_clause}"
     finally:
-        _dec_depth(ctx)
+        dec_depth(ctx)
 
 # =============================================================================
 # JOIN Generation (SQLsmith style)

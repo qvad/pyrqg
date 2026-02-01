@@ -52,6 +52,21 @@ def _connect(dsn: Optional[str]) -> PGConnection:
     return psycopg2.connect(dsn_effective)  # type: ignore
 
 
+def _init_context(dsn: Optional[str], seed: Optional[int]) -> Optional[Context]:
+    """Initialize a schema context for introspection.
+
+    This is a helper to avoid duplicate context initialization code.
+    Returns None if context cannot be initialized.
+    """
+    if not dsn:
+        return None
+    try:
+        return Context(dsn=dsn, seed=seed)
+    except Exception as e:
+        logger.warning("Could not initialize schema context: %s", e)
+        return None
+
+
 def action_list(rqg: RQG, _args: argparse.Namespace) -> int:
     grammars = rqg.list_grammars()
     print("Available grammars (name: description):")
@@ -62,14 +77,7 @@ def action_list(rqg: RQG, _args: argparse.Namespace) -> int:
 
 def action_grammar(rqg: RQG, args: argparse.Namespace) -> int:
     dsn = args.dsn or os.environ.get("PYRQG_DSN")
-    context = None
-    
-    if dsn:
-        try:
-            # Introspection connection
-            context = Context(dsn=dsn, seed=args.seed)
-        except Exception as e:
-            logger.warning("Could not initialize schema context: %s", e)
+    context = _init_context(dsn, args.seed)
 
     # Dry run / Output to file mode
     if not (args.execute or dsn):
@@ -128,13 +136,10 @@ def action_all(rqg: RQG, args: argparse.Namespace) -> int:
         conn.close()
 
     # Initialize schema context for generation
-    context = None
-    try:
-        logger.info("Introspecting schema from %s...", dsn)
-        context = Context(dsn=dsn, seed=args.seed)
+    logger.info("Introspecting schema from %s...", dsn)
+    context = _init_context(dsn, args.seed)
+    if context:
         logger.info("Loaded %d tables.", len(context.tables))
-    except Exception as e:
-        logger.warning("Could not initialize schema context: %s", e)
 
     total_stats = {'ok': 0, 'err': 0}
     

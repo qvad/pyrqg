@@ -15,6 +15,11 @@ Reference: https://github.com/sqlancer/sqlancer (yugabyte/ycql module)
 """
 
 from pyrqg.dsl.core import Grammar, Lambda, choice, template, maybe, repeat, Literal
+from pyrqg.dsl.utils import (
+    pick_table_and_store, pick_column as utils_pick_column, generate_constant,
+    random_int, random_boolean, random_text, random_float,
+    random_date, random_timestamp, inc_depth, dec_depth, get_depth
+)
 
 g = Grammar("sqlancer_ycql")
 
@@ -29,93 +34,29 @@ INT_SIZES = {1: 'TINYINT', 2: 'SMALLINT', 4: 'INT', 8: 'BIGINT'}
 FLOAT_SIZES = {4: 'FLOAT', 8: 'DOUBLE'}
 
 # =============================================================================
-# Helper Functions
+# Helper Functions - Using consolidated utilities
 # =============================================================================
 
 def _pick_table(ctx):
     """Pick a random table and store it in context state."""
-    if ctx.tables:
-        t = ctx.rng.choice(list(ctx.tables.keys()))
-        ctx.state['table'] = t
-        return t
-    return "t0"
+    return pick_table_and_store(ctx, fallback="t0")
+
 
 def _pick_column(ctx, is_pk=None):
     """Pick a column, optionally filtering by primary key status."""
-    t_name = ctx.state.get('table')
-    if not t_name or t_name not in ctx.tables:
-        return "c0"
-    table = ctx.tables[t_name]
-    cols = list(table.columns.values())
-    if is_pk is not None:
-        cols = [c for c in cols if c.is_primary_key == is_pk]
-    if not cols:
-        cols = list(table.columns.values())
-    if not cols:
-        return "c0"
-    return ctx.rng.choice([c.name for c in cols])
+    return utils_pick_column(ctx, is_pk=is_pk, fallback="c0")
+
 
 def _pick_pk_column(ctx):
     """Pick a primary key column."""
-    return _pick_column(ctx, is_pk=True)
+    return utils_pick_column(ctx, is_pk=True, fallback="c0")
 
-def _random_int(ctx):
-    """Generate a random integer constant."""
-    return str(ctx.rng.randint(-1000000, 1000000))
-
-def _random_boolean(ctx):
-    """Generate a random boolean constant."""
-    return ctx.rng.choice(['TRUE', 'FALSE'])
-
-def _random_varchar(ctx):
-    """Generate a random string constant."""
-    length = ctx.rng.randint(0, 20)
-    chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 '
-    text = ''.join(ctx.rng.choice(chars) for _ in range(length))
-    text = text.replace("'", "''")
-    return f"'{text}'"
-
-def _random_float(ctx):
-    """Generate a random float constant."""
-    return str(ctx.rng.uniform(-1000000, 1000000))
-
-def _random_date(ctx):
-    """Generate a random date constant."""
-    year = ctx.rng.randint(1970, 2030)
-    month = ctx.rng.randint(1, 12)
-    day = ctx.rng.randint(1, 28)
-    return f"'{year:04d}-{month:02d}-{day:02d}'"
-
-def _random_timestamp(ctx):
-    """Generate a random timestamp constant."""
-    year = ctx.rng.randint(1970, 2030)
-    month = ctx.rng.randint(1, 12)
-    day = ctx.rng.randint(1, 28)
-    hour = ctx.rng.randint(0, 23)
-    minute = ctx.rng.randint(0, 59)
-    second = ctx.rng.randint(0, 59)
-    return f"'{year:04d}-{month:02d}-{day:02d} {hour:02d}:{minute:02d}:{second:02d}'"
 
 def _gen_constant(ctx, data_type=None):
     """Generate a constant for a given data type."""
-    # Small probability of NULL
-    if ctx.rng.random() < 0.05:
-        return 'NULL'
-
     if data_type is None:
         data_type = ctx.rng.choice(YCQL_DATA_TYPES)
-
-    generators = {
-        'INT': _random_int,
-        'VARCHAR': _random_varchar,
-        'BOOLEAN': _random_boolean,
-        'FLOAT': _random_float,
-        'DATE': _random_date,
-        'TIMESTAMP': _random_timestamp,
-    }
-
-    gen = generators.get(data_type.upper(), _random_varchar)
-    return gen(ctx)
+    return generate_constant(ctx, data_type)
 
 # =============================================================================
 # YCQL Operators (from YCQLExpressionGenerator)
@@ -177,21 +118,10 @@ def _gen_aggregate(ctx):
     return f"{agg}({col})"
 
 # =============================================================================
-# Expression Depth Control
+# Expression Depth Control - using consolidated utilities
 # =============================================================================
 
 MAX_DEPTH = 3
-
-def _get_depth(ctx):
-    return ctx.state.get('depth', 0)
-
-def _inc_depth(ctx):
-    depth = ctx.state.get('depth', 0) + 1
-    ctx.state['depth'] = depth
-    return depth
-
-def _dec_depth(ctx):
-    ctx.state['depth'] = max(0, ctx.state.get('depth', 0) - 1)
 
 # =============================================================================
 # Expression Generator
@@ -199,7 +129,7 @@ def _dec_depth(ctx):
 
 def _gen_expression(ctx, data_type=None):
     """Generate an expression."""
-    depth = _inc_depth(ctx)
+    depth = inc_depth(ctx)
     try:
         if depth > MAX_DEPTH or ctx.rng.random() < 0.4:
             # Return a leaf node
@@ -245,7 +175,7 @@ def _gen_expression(ctx, data_type=None):
             not_in = 'NOT ' if ctx.rng.random() < 0.3 else ''
             return f"({expr}) {not_in}IN ({values})"
     finally:
-        _dec_depth(ctx)
+        dec_depth(ctx)
 
 def _gen_boolean_expression(ctx):
     """Generate a boolean expression for WHERE clause."""

@@ -14,6 +14,12 @@ Reference: https://github.com/sqlancer/sqlancer (postgres, yugabyte modules)
 """
 
 from pyrqg.dsl.core import Grammar, Lambda, choice, template, maybe, repeat, Literal
+from pyrqg.dsl.utils import (
+    pick_table_and_store, pick_column as utils_pick_column, generate_constant,
+    random_int, random_boolean, random_text, random_numeric, random_float,
+    random_date, random_timestamp, random_inet, random_bit, random_money,
+    random_bytea, random_range, inc_depth, dec_depth, get_depth
+)
 
 g = Grammar("sqlancer_ysql")
 
@@ -46,199 +52,32 @@ TYPE_SQL_MAPPING = {
 }
 
 # =============================================================================
-# YCQL Data Types (from YCQLSchema.YCQLDataType)
-# =============================================================================
-
-YCQL_DATA_TYPES = ['INT', 'VARCHAR', 'BOOLEAN', 'FLOAT', 'DATE', 'TIMESTAMP']
-
-# YCQL type mappings
-YCQL_TYPE_SQL_MAPPING = {
-    'INT': {1: 'TINYINT', 2: 'SMALLINT', 4: ['INTEGER', 'INT'], 8: 'BIGINT'},
-    'VARCHAR': ['VARCHAR', 'TEXT'],
-    'BOOLEAN': ['BOOLEAN'],
-    'FLOAT': {4: 'FLOAT', 8: 'DOUBLE'},
-    'DATE': ['DATE'],
-    'TIMESTAMP': ['TIMESTAMP'],
-}
-
-# =============================================================================
-# Helper Functions
+# Helper Functions - Using consolidated utilities
 # =============================================================================
 
 def _pick_table(ctx):
     """Pick a random table and store it in context state."""
-    if ctx.tables:
-        t = ctx.rng.choice(list(ctx.tables.keys()))
-        ctx.state['table'] = t
-        return t
-    return "t0"
+    return pick_table_and_store(ctx, fallback="t0")
+
 
 def _pick_column(ctx, data_type=None):
     """Pick a column, optionally filtering by data type."""
-    t_name = ctx.state.get('table')
-    if not t_name or t_name not in ctx.tables:
-        return "c0"
-    table = ctx.tables[t_name]
-    cols = list(table.columns.values())
-    if data_type:
-        cols = [c for c in cols if _matches_type(c.data_type, data_type)]
-    if not cols:
-        cols = list(table.columns.values())
-    if not cols:
-        return "c0"
-    return ctx.rng.choice([c.name for c in cols])
+    return utils_pick_column(ctx, data_type=data_type, fallback="c0")
 
-def _matches_type(col_type: str, target_type: str) -> bool:
-    """Check if column type matches target PostgreSQL type."""
-    col_type_lower = col_type.lower().split('(')[0].strip()
-    target_lower = target_type.lower()
-
-    type_mapping = {
-        'int': ['smallint', 'integer', 'bigint', 'int', 'int4', 'int8', 'serial', 'bigserial', 'tinyint'],
-        'boolean': ['boolean', 'bool'],
-        'text': ['text', 'varchar', 'character varying', 'char', 'character', 'name', 'bpchar'],
-        'decimal': ['decimal', 'numeric'],
-        'float': ['real', 'float4', 'float', 'double'],
-        'real': ['double precision', 'float8'],
-        'range': ['int4range', 'int8range', 'numrange', 'tsrange', 'daterange'],
-        'money': ['money'],
-        'bit': ['bit', 'bit varying', 'varbit'],
-        'inet': ['inet', 'cidr'],
-        'bytea': ['bytea'],
-        'date': ['date'],
-        'timestamp': ['timestamp', 'timestamptz'],
-    }
-
-    return col_type_lower in type_mapping.get(target_lower, [])
-
-def _random_int(ctx, min_val=-1000000, max_val=1000000):
-    """Generate a random integer constant."""
-    return str(ctx.rng.randint(min_val, max_val))
-
-def _random_boolean(ctx):
-    """Generate a random boolean constant."""
-    if ctx.rng.random() < 0.1:
-        # Sometimes use text representations (from SQLancer)
-        return ctx.rng.choice(["'TRUE'", "'FALSE'", "'0'", "'1'", "'ON'", "'off'"])
-    return ctx.rng.choice(['TRUE', 'FALSE'])
-
-def _random_text(ctx):
-    """Generate a random text constant."""
-    length = ctx.rng.randint(0, 10)
-    chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 '
-    text = ''.join(ctx.rng.choice(chars) for _ in range(length))
-    # Escape single quotes
-    text = text.replace("'", "''")
-    return f"'{text}'"
-
-def _random_decimal(ctx):
-    """Generate a random decimal constant."""
-    whole = ctx.rng.randint(-1000, 1000)
-    frac = ctx.rng.randint(0, 999999)
-    return f"{whole}.{frac}"
-
-def _random_float(ctx):
-    """Generate a random float constant."""
-    return str(ctx.rng.uniform(-1000000, 1000000))
-
-def _random_range(ctx):
-    """Generate a random int4range constant."""
-    lower = ctx.rng.randint(-1000, 1000)
-    upper = ctx.rng.randint(lower, lower + 1000)
-    lower_inc = ctx.rng.choice(['[', '('])
-    upper_inc = ctx.rng.choice([']', ')'])
-    return f"'{lower_inc}{lower},{upper}{upper_inc}'::int4range"
-
-def _random_inet(ctx):
-    """Generate a random inet constant."""
-    octets = [str(ctx.rng.randint(0, 255)) for _ in range(4)]
-    return f"'{'.'.join(octets)}'::inet"
-
-def _random_bit(ctx):
-    """Generate a random bit constant."""
-    length = ctx.rng.randint(1, 32)
-    bits = ''.join(ctx.rng.choice(['0', '1']) for _ in range(length))
-    return f"B'{bits}'"
-
-def _random_money(ctx):
-    """Generate a random money constant."""
-    amount = ctx.rng.randint(-10000, 10000)
-    cents = ctx.rng.randint(0, 99)
-    return f"'{amount}.{cents:02d}'::money"
-
-def _random_bytea(ctx):
-    """Generate a random bytea constant (YSQL-specific)."""
-    # Generate random hex bytes
-    length = ctx.rng.randint(1, 20)
-    hex_chars = '0123456789abcdef'
-    hex_str = ''.join(ctx.rng.choice(hex_chars) for _ in range(length * 2))
-    return f"'\\x{hex_str}'::bytea"
-
-def _random_date(ctx):
-    """Generate a random date constant (YCQL)."""
-    year = ctx.rng.randint(1970, 2030)
-    month = ctx.rng.randint(1, 12)
-    day = ctx.rng.randint(1, 28)
-    return f"'{year:04d}-{month:02d}-{day:02d}'"
-
-def _random_timestamp(ctx):
-    """Generate a random timestamp constant (YCQL)."""
-    year = ctx.rng.randint(1970, 2030)
-    month = ctx.rng.randint(1, 12)
-    day = ctx.rng.randint(1, 28)
-    hour = ctx.rng.randint(0, 23)
-    minute = ctx.rng.randint(0, 59)
-    second = ctx.rng.randint(0, 59)
-    return f"'{year:04d}-{month:02d}-{day:02d} {hour:02d}:{minute:02d}:{second:02d}'"
 
 def _gen_constant(ctx, data_type=None):
     """Generate a constant for a given data type."""
-    # Small probability of NULL for any type
-    if ctx.rng.random() < 0.05:
-        return 'NULL'
+    # Keep extended boolean constant generation for SQLancer compatibility
+    if data_type and data_type.upper() == 'BOOLEAN' and ctx.rng.random() < 0.1:
+        return ctx.rng.choice(["'TRUE'", "'FALSE'", "'0'", "'1'", "'ON'", "'off'"])
+    return generate_constant(ctx, data_type)
 
-    if data_type is None:
-        data_type = ctx.rng.choice(COMMON_DATA_TYPES)
-
-    generators = {
-        'INT': _random_int,
-        'BOOLEAN': _random_boolean,
-        'TEXT': _random_text,
-        'DECIMAL': _random_decimal,
-        'FLOAT': _random_float,
-        'REAL': _random_float,
-        'RANGE': _random_range,
-        'MONEY': _random_money,
-        'BIT': _random_bit,
-        'INET': _random_inet,
-        'BYTEA': _random_bytea,      # YSQL
-        'VARCHAR': _random_text,     # YCQL
-        'DATE': _random_date,        # YCQL
-        'TIMESTAMP': _random_timestamp,  # YCQL
-    }
-
-    gen = generators.get(data_type.upper(), _random_int)
-    return gen(ctx)
 
 # =============================================================================
 # Expression Depth Control
 # =============================================================================
 
 MAX_DEPTH = 3
-
-def _get_depth(ctx):
-    """Get current expression depth."""
-    return ctx.state.get('depth', 0)
-
-def _inc_depth(ctx):
-    """Increment and return expression depth."""
-    depth = ctx.state.get('depth', 0) + 1
-    ctx.state['depth'] = depth
-    return depth
-
-def _dec_depth(ctx):
-    """Decrement expression depth."""
-    ctx.state['depth'] = max(0, ctx.state.get('depth', 0) - 1)
 
 # =============================================================================
 # Comparison Operators (from PostgresBinaryComparisonOperation)
@@ -319,7 +158,7 @@ FUNCTIONS_REAL = ['abs', 'cbrt', 'ceiling', 'ceil', 'degrees', 'exp', 'floor', '
 
 def _gen_function_call(ctx, return_type='INT'):
     """Generate a function call for a given return type."""
-    depth = _inc_depth(ctx)
+    depth = inc_depth(ctx)
     try:
         if depth > MAX_DEPTH:
             return _gen_constant(ctx, return_type)
@@ -393,7 +232,7 @@ def _gen_function_call(ctx, return_type='INT'):
             arg = _gen_expression(ctx, return_type)
             return f"{func}({arg})"
     finally:
-        _dec_depth(ctx)
+        dec_depth(ctx)
 
 # =============================================================================
 # Aggregate Functions (from PostgresAggregate)
@@ -416,7 +255,7 @@ AGGREGATE_FUNCTIONS = {
 
 def _gen_aggregate(ctx, return_type=None):
     """Generate an aggregate function call."""
-    depth = _inc_depth(ctx)
+    depth = inc_depth(ctx)
     try:
         if return_type:
             eligible = [name for name, types in AGGREGATE_FUNCTIONS.items() if types is None or return_type in types]
@@ -436,14 +275,14 @@ def _gen_aggregate(ctx, return_type=None):
             return f"COUNT({distinct}{arg})"
         elif agg == 'STRING_AGG':
             expr = _gen_expression(ctx, 'TEXT')
-            sep = _random_text(ctx)
+            sep = random_text(ctx)
             return f"STRING_AGG({expr}, {sep})"
         else:
             distinct = 'DISTINCT ' if ctx.rng.random() < 0.1 else ''
             arg = _gen_expression(ctx, return_type or 'INT')
             return f"{agg}({distinct}{arg})"
     finally:
-        _dec_depth(ctx)
+        dec_depth(ctx)
 
 # =============================================================================
 # Window Functions (from PostgresWindowFunction)
@@ -507,7 +346,7 @@ def _gen_window_function(ctx):
 
 def _gen_expression(ctx, data_type=None):
     """Generate an expression of a given type."""
-    depth = _inc_depth(ctx)
+    depth = inc_depth(ctx)
     try:
         if depth > MAX_DEPTH or ctx.rng.random() < 0.3:
             # Return a leaf node (constant or column)
@@ -537,7 +376,7 @@ def _gen_expression(ctx, data_type=None):
         else:
             return _gen_constant(ctx, data_type)
     finally:
-        _dec_depth(ctx)
+        dec_depth(ctx)
 
 def _gen_boolean_expression(ctx):
     """Generate a boolean expression."""
