@@ -638,11 +638,28 @@ def _gen_set_operation(ctx):
     if ctx.rng.random() < 0.85:
         return _gen_full_select(ctx)
 
-    left = _gen_full_select(ctx)
+    # Use SELECT * from the same table to ensure column counts match
+    t_name = _pick_table(ctx)
     op = ctx.rng.choice(['UNION', 'UNION ALL', 'INTERSECT', 'INTERSECT ALL', 'EXCEPT', 'EXCEPT ALL'])
-    right = _gen_full_select(ctx)
 
-    return f"({left}) {op} ({right})"
+    # Generate simple conditions for variety
+    col = _pick_column(ctx)
+    val1 = _gen_constant(ctx)
+    val2 = _gen_constant(ctx)
+
+    left = f"SELECT * FROM {t_name} WHERE {col} IS NOT NULL"
+    right = f"SELECT * FROM {t_name} WHERE {col} IS NULL"
+
+    # Sometimes add LIMIT
+    if ctx.rng.random() < 0.3:
+        limit = ctx.rng.randint(1, 100)
+        left = f"({left} LIMIT {limit})"
+        right = f"({right} LIMIT {limit})"
+    else:
+        left = f"({left})"
+        right = f"({right})"
+
+    return f"{left} {op} {right}"
 
 # =============================================================================
 # DML Statements with RETURNING (SQLsmith feature)

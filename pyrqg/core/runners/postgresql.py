@@ -15,6 +15,7 @@ from typing import Optional, Iterator, List, Any
 
 try:
     import psycopg2
+    import psycopg2.errors
     from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
     PSYCOPG2_AVAILABLE = True
 except ImportError:
