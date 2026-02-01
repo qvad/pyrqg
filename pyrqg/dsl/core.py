@@ -318,9 +318,18 @@ class RuleRef(Element):
 # ============================================================================
 
 class Grammar:
-    """Container for grammar rules."""
-    def __init__(self, name: str = "grammar"):
+    """Container for grammar rules.
+
+    Attributes:
+        name: Grammar name.
+        target_api: Target database API ('ysql', 'ycql', or 'postgres').
+                    Defaults to 'ysql' (PostgreSQL-compatible).
+        description: Optional description of the grammar.
+    """
+    def __init__(self, name: str = "grammar", target_api: str = "ysql", description: str = ""):
         self.name = name
+        self.target_api = target_api  # 'ysql', 'ycql', or 'postgres'
+        self.description = description
         self.rules = {}
         self.context = Context()
 

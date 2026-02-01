@@ -47,15 +47,22 @@ class RQG:
         builtins = {
             'ddl': 'ddl_focused',
             'real_workload': 'real_workload',
-            'basic_crud': 'basic_crud'
+            'basic_crud': 'basic_crud',
+            'sqlsmith_ysql': 'sqlsmith_ysql',
+            'yugabyte_ysql': 'yugabyte_ysql',
+            'yugabyte_ycql': 'yugabyte_ycql',
         }
         for name, module in builtins.items():
             if not self._loader.load_by_name(module):
-                logger.warning("Builtin grammar '%s' could not be loaded", module)
+                logger.debug("Builtin grammar '%s' could not be loaded", module)
             else:
                 # Register under short name if different
                 if name != module and module in self._loader.grammars:
                     self._loader.grammars[name] = self._loader.grammars[module]
+                # Also register under the grammar's internal name if different
+                grammar = self._loader.grammars.get(module)
+                if grammar and hasattr(grammar, 'name') and grammar.name != module:
+                    self._loader.grammars[grammar.name] = grammar
     
     def add_table(self, table: Table):
         """Add a table definition"""
@@ -128,8 +135,17 @@ class RQG:
             'real_workload': 'Simplified real-world analytics workload',
             'basic_crud': 'Simple SELECT/INSERT/UPDATE/DELETE operations',
         }
-        return {name: descriptions.get(name, 'Custom grammar') 
-                for name in self.grammars.keys()}
+        result = {}
+        for name, grammar in self.grammars.items():
+            desc = descriptions.get(name, 'Custom grammar')
+            # Include grammar's own description if available
+            if hasattr(grammar, 'description') and grammar.description:
+                desc = grammar.description
+            # Include target API info
+            if hasattr(grammar, 'target_api') and grammar.target_api != 'ysql':
+                desc = f"[{grammar.target_api.upper()}] {desc}"
+            result[name] = desc
+        return result
     
     def add_grammar(self, name: str, grammar):
         """Add a custom grammar"""

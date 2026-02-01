@@ -7,6 +7,12 @@ def test_cli_parses_list_subcommand():
     assert args.mode == 'list'
 
 
+def test_cli_parses_runners_subcommand():
+    parser = build_parser()
+    args = parser.parse_args(['runners'])
+    assert args.mode == 'runners'
+
+
 def test_cli_parses_grammar_subcommand():
     parser = build_parser()
     args = parser.parse_args([

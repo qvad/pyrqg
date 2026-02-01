@@ -21,7 +21,11 @@ from pyrqg.dsl.utils import (
     random_date, random_timestamp, inc_depth, dec_depth, get_depth
 )
 
-g = Grammar("sqlancer_ycql")
+g = Grammar(
+    "sqlancer_ycql",
+    target_api="ycql",
+    description="YugabyteDB YCQL (Cassandra-compatible) queries"
+)
 
 # =============================================================================
 # YCQL Data Types (from YCQLSchema.YCQLDataType)
